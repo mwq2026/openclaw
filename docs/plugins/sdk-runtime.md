@@ -41,9 +41,18 @@ Persist changes with `api.runtime.config.mutateConfigFile(...)` or `api.runtime.
 
 The mutation helpers return `afterWrite` plus a typed `followUp` summary so callers can log or test whether they requested a restart. The gateway still owns when that restart actually happens.
 
-`api.runtime.config.loadConfig()` and `api.runtime.config.writeConfigFile(...)` are deprecated compatibility helpers. They warn once at runtime, and bundled plugins must not use them; the architecture guard fails if production plugin code calls them or imports those helpers from plugin SDK subpaths.
+`api.runtime.config.loadConfig()` and `api.runtime.config.writeConfigFile(...)` are deprecated compatibility helpers under `runtime-config-load-write`. They warn once at runtime, and remain available for old external plugins during the migration window. Bundled plugins must not use them; the config boundary guards fail if plugin code calls them or imports those helpers from plugin SDK subpaths.
+
+For direct SDK imports, use the focused config subpaths instead of the broad
+`openclaw/plugin-sdk/config-runtime` compatibility barrel: `config-types` for
+types, `plugin-config-runtime` for already-loaded config assertions and plugin
+entry lookup, `runtime-config-snapshot` for current process snapshots, and
+`config-mutation` for writes. Bundled plugin tests should mock these focused
+subpaths directly instead of mocking the broad compatibility barrel.
 
 Internal OpenClaw runtime code has the same direction: load config once at the CLI, gateway, or process boundary, then pass that value through. Successful mutation writes refresh the process runtime snapshot and advance its internal revision; long-lived caches should key off the runtime-owned cache key instead of serializing config locally. Long-lived runtime modules have a zero-tolerance scanner for ambient `loadConfig()` calls; use a passed `cfg`, a request `context.getRuntimeConfig()`, or `getRuntimeConfig()` at an explicit process boundary.
+
+Provider and channel execution paths must use the active runtime config snapshot, not a file snapshot returned for config readback or editing. File snapshots preserve source values such as SecretRef markers for UI and writes; provider callbacks need the resolved runtime view. When a helper may be called with either the active source snapshot or the active runtime snapshot, route through `selectApplicableRuntimeConfig()` before reading credentials.
 
 ## Runtime namespaces
 
@@ -172,11 +181,11 @@ Internal OpenClaw runtime code has the same direction: load config once at the C
     Inside the Gateway this runtime is in-process. In plugin CLI commands it calls the configured Gateway over RPC, so commands such as `openclaw googlemeet recover-tab` can inspect paired nodes from the terminal. Node commands still go through normal Gateway node pairing, command allowlists, and node-local command handling.
 
   </Accordion>
-  <Accordion title="api.runtime.taskFlow">
+  <Accordion title="api.runtime.tasks.managedFlows">
     Bind a Task Flow runtime to an existing OpenClaw session key or trusted tool context, then create and manage Task Flows without passing an owner on every call.
 
     ```typescript
-    const taskFlow = api.runtime.taskFlow.fromToolContext(ctx);
+    const taskFlow = api.runtime.tasks.managedFlows.fromToolContext(ctx);
 
     const created = taskFlow.createManaged({
       controllerId: "my-plugin/review-batch",

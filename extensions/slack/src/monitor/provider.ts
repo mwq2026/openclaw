@@ -8,7 +8,7 @@ import {
 } from "openclaw/plugin-sdk/allow-from";
 import { CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY } from "openclaw/plugin-sdk/approval-handler-adapter-runtime";
 import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
-import type { SessionScope } from "openclaw/plugin-sdk/config-runtime";
+import type { SessionScope } from "openclaw/plugin-sdk/config-types";
 import { resolveTextChunkLimit } from "openclaw/plugin-sdk/reply-chunking";
 import { DEFAULT_GROUP_HISTORY_LIMIT } from "openclaw/plugin-sdk/reply-history";
 import { normalizeMainKey } from "openclaw/plugin-sdk/routing";
@@ -192,6 +192,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     signingSecret: signingSecret ?? undefined,
     slackWebhookPath,
     clientOptions: clientOptions as Record<string, unknown>,
+    ...(slackCfg.socketMode ? { socketMode: slackCfg.socketMode } : {}),
   });
 
   // Pre-set shuttingDown on the SocketModeClient before app.stop() to prevent

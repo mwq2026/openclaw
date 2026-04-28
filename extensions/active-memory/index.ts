@@ -9,14 +9,16 @@ import {
   resolveAgentWorkspaceDir,
   resolveDefaultModelForAgent,
 } from "openclaw/plugin-sdk/agent-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
 import {
   resolveLivePluginConfigObject,
   resolvePluginConfigObject,
+} from "openclaw/plugin-sdk/plugin-config-runtime";
+import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import {
   resolveSessionStoreEntry,
   updateSessionStore,
-  type OpenClawConfig,
-} from "openclaw/plugin-sdk/config-runtime";
-import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -1232,7 +1234,7 @@ async function readActiveMemorySearchDebug(
         continue;
       }
       const details = asRecord(message.details);
-      const debug = asRecord(details?.debug) ?? {};
+      const debug = asRecord(details?.debug);
       const warning = normalizeOptionalString(details?.warning);
       const action = normalizeOptionalString(details?.action);
       const error = normalizeOptionalString(details?.error);
@@ -1877,7 +1879,7 @@ async function maybeResolveActiveRecall(params: {
     if (controller.signal.aborted) {
       const result: ActiveRecallResult = {
         status: "timeout",
-        elapsedMs: Date.now() - startedAt,
+        elapsedMs: params.config.timeoutMs,
         summary: null,
       };
       if (params.config.logging) {

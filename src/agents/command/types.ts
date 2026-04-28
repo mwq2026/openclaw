@@ -19,6 +19,8 @@ export type AgentCommandResultMetaOverrides = {
   fallbackFrom?: "gateway";
 };
 
+export type AcpTurnSource = "manual_spawn";
+
 export type AgentRunContext = {
   messageChannel?: string;
   accountId?: string;
@@ -99,12 +101,16 @@ export type AgentCommandOpts = {
   workspaceDir?: SpawnedRunMetadata["workspaceDir"];
   /** Force bundled MCP teardown when a one-shot local run completes. */
   cleanupBundleMcpOnRunEnd?: boolean;
+  /** Force long-lived CLI live session teardown when a one-shot local run completes. */
+  cleanupCliLiveSessionOnRunEnd?: boolean;
   /** Internal local CLI callers can annotate result metadata before JSON/text output. */
   resultMetaOverrides?: AgentCommandResultMetaOverrides;
   /** Internal one-shot model probe mode: no tools, no workspace/chat prompt policy. */
   modelRun?: boolean;
   /** Internal prompt-mode override for trusted local/gateway callsites. */
   promptMode?: PromptMode;
+  /** Internal ACP-ready session turn source. Manual spawn turns bypass only the dispatch gate. */
+  acpTurnSource?: AcpTurnSource;
 };
 
 export type AgentCommandIngressOpts = Omit<

@@ -1,6 +1,6 @@
-import { ChannelType, type Guild } from "@buape/carbon";
 import { typedCases } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ChannelType, type Guild } from "./internal/discord.js";
 import {
   allowListMatches,
   type DiscordGuildEntryResolved,
@@ -121,7 +121,7 @@ describe("DiscordMessageListener", () => {
 
     const handlePromise = listener.handle(
       {} as unknown as import("./monitor/listeners.js").DiscordMessageEvent,
-      {} as unknown as import("@buape/carbon").Client,
+      {} as unknown as import("./internal/discord.js").Client,
     );
 
     // handle() returns immediately while the background queue starts on the next tick.
@@ -153,13 +153,13 @@ describe("DiscordMessageListener", () => {
     await expect(
       listener.handle(
         {} as unknown as import("./monitor/listeners.js").DiscordMessageEvent,
-        {} as unknown as import("@buape/carbon").Client,
+        {} as unknown as import("./internal/discord.js").Client,
       ),
     ).resolves.toBeUndefined();
     await expect(
       listener.handle(
         {} as unknown as import("./monitor/listeners.js").DiscordMessageEvent,
-        {} as unknown as import("@buape/carbon").Client,
+        {} as unknown as import("./internal/discord.js").Client,
       ),
     ).resolves.toBeUndefined();
 
@@ -186,13 +186,13 @@ describe("DiscordMessageListener", () => {
 
     await listener.handle(
       {} as unknown as import("./monitor/listeners.js").DiscordMessageEvent,
-      {} as unknown as import("@buape/carbon").Client,
+      {} as unknown as import("./internal/discord.js").Client,
     );
     await flushAsyncWork();
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("discord handler failed"));
   });
 
-  it("does not apply its own slow-listener logging (owned by inbound worker)", async () => {
+  it("does not apply its own slow-listener logging", async () => {
     const deferred = createDeferred();
     const handler = vi.fn(() => deferred.promise);
     const logger = {
@@ -205,15 +205,14 @@ describe("DiscordMessageListener", () => {
 
     const handlePromise = listener.handle(
       {} as unknown as import("./monitor/listeners.js").DiscordMessageEvent,
-      {} as unknown as import("@buape/carbon").Client,
+      {} as unknown as import("./internal/discord.js").Client,
     );
     await expect(handlePromise).resolves.toBeUndefined();
 
     deferred.resolve();
     await flushAsyncWork();
     expect(handler).toHaveBeenCalledOnce();
-    // The listener no longer wraps handlers with slow-listener logging;
-    // that responsibility moved to the inbound worker.
+    // The listener no longer wraps message handlers with slow-listener logging.
     expect(logger.warn).not.toHaveBeenCalled();
   });
 });
@@ -960,7 +959,7 @@ function makeReactionEvent(overrides?: {
     message: {
       fetch: messageFetch,
     },
-  } as DiscordReactionEvent;
+  } as unknown as DiscordReactionEvent;
 }
 
 function makeReactionClient(options?: {
@@ -1009,7 +1008,7 @@ function makeReactionListenerParams(overrides?: {
     groupDmEnabled: overrides?.groupDmEnabled ?? true,
     groupDmChannels: overrides?.groupDmChannels ?? [],
     dmPolicy: overrides?.dmPolicy ?? "open",
-    allowFrom: overrides?.allowFrom ?? [],
+    allowFrom: overrides?.allowFrom ?? ["*"],
     groupPolicy: overrides?.groupPolicy ?? "open",
     allowNameMatching: overrides?.allowNameMatching ?? false,
     guildEntries: overrides?.guildEntries,

@@ -25,6 +25,7 @@ import { withEnv } from "../test-utils/env.js";
 import { resolveBundledRuntimeDependencyInstallRootPlan } from "./bundled-runtime-deps.js";
 import { clearPluginCommands } from "./command-registry-state.js";
 import { getPluginCommandSpecs } from "./command-specs.js";
+import { listCompactionProviderIds } from "./compaction-provider.js";
 import {
   getGlobalHookRunner,
   getGlobalPluginRegistry,
@@ -72,6 +73,7 @@ import {
   getMemoryRuntime,
   listActiveMemoryPublicArtifacts,
   listMemoryCorpusSupplements,
+  listMemoryPromptSupplements,
   registerMemoryCorpusSupplement,
   registerMemoryFlushPlanResolver,
   registerMemoryPromptSupplement,
@@ -216,6 +218,7 @@ function writeBundledPlugin(params: {
     filename: params.filename ?? "index.cjs",
     body: params.body ?? simplePluginBody(params.id),
   });
+  delete process.env.OPENCLAW_DISABLE_BUNDLED_PLUGINS;
   process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = bundledDir;
   return { bundledDir, plugin };
 }
@@ -921,7 +924,7 @@ describe("loadOpenClawPlugins", () => {
         allow: [plugin.id],
       },
     };
-    const manifestRegistry = loadPluginManifestRegistry({ config, cache: false });
+    const manifestRegistry = loadPluginManifestRegistry({ config });
     fs.rmSync(path.join(plugin.dir, "openclaw.plugin.json"));
 
     const registry = loadOpenClawPlugins({
@@ -2784,7 +2787,7 @@ module.exports = {
     {
       label: "loads plugins from config paths",
       run: () => {
-        process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+        useNoBundledPlugins();
         const plugin = writePlugin({
           id: "allowed-config-path",
           filename: "allowed-config-path.cjs",
@@ -3282,6 +3285,39 @@ module.exports = { id: "throws-after-import", register() {} };`,
     expect(registry.plugins).toEqual([]);
   });
 
+  it("skips discovery and manifest registry loading entirely when onlyPluginIds is an explicit empty array", async () => {
+    useNoBundledPlugins();
+    const allowed = writePlugin({
+      id: "allowed-empty-scope",
+      filename: "allowed-empty-scope.cjs",
+      body: `module.exports = { id: "allowed-empty-scope", register() {} };`,
+    });
+
+    const discovery = await import("./discovery.js");
+    const manifestRegistry = await import("./manifest-registry.js");
+    const discoverySpy = vi.spyOn(discovery, "discoverOpenClawPlugins");
+    const manifestSpy = vi.spyOn(manifestRegistry, "loadPluginManifestRegistry");
+
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      activate: false,
+      config: {
+        plugins: {
+          load: { paths: [allowed.file] },
+          allow: ["allowed-empty-scope"],
+        },
+      },
+      onlyPluginIds: [],
+    });
+
+    expect(registry.plugins).toEqual([]);
+    expect(discoverySpy).not.toHaveBeenCalled();
+    expect(manifestSpy).not.toHaveBeenCalled();
+
+    discoverySpy.mockRestore();
+    manifestSpy.mockRestore();
+  });
+
   it("only publishes plugin commands to the global registry during activating loads", async () => {
     useNoBundledPlugins();
     const plugin = writePlugin({
@@ -3383,6 +3419,44 @@ module.exports = { id: "throws-after-import", register() {} };`,
       },
     });
     expect(listAgentHarnessIds()).toEqual([]);
+  });
+
+  it("rejects malformed plugin agent harness registrations", () => {
+    useNoBundledPlugins();
+    const plugin = writePlugin({
+      id: "bad-harness",
+      filename: "bad-harness.cjs",
+      body: `module.exports = {
+        id: "bad-harness",
+        register(api) {
+          api.registerAgentHarness({
+            id: "broken",
+            label: "Broken",
+          });
+        },
+      };`,
+    });
+
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      workspaceDir: plugin.dir,
+      config: {
+        plugins: {
+          load: { paths: [plugin.file] },
+          allow: ["bad-harness"],
+        },
+      },
+      onlyPluginIds: ["bad-harness"],
+    });
+
+    expect(listAgentHarnessIds()).toEqual([]);
+    expect(registry.diagnostics).toContainEqual(
+      expect.objectContaining({
+        level: "error",
+        pluginId: "bad-harness",
+        message: 'agent harness "broken" registration missing required runtime methods',
+      }),
+    );
   });
 
   it("does not register internal hooks globally during non-activating loads", () => {
@@ -4372,7 +4446,7 @@ module.exports = { id: "throws-after-import", register() {} };`,
   });
 
   it("re-initializes global hook runner when serving registry from cache", () => {
-    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    useNoBundledPlugins();
     const plugin = writePlugin({
       id: "cache-hook-runner",
       filename: "cache-hook-runner.cjs",
@@ -5120,6 +5194,21 @@ module.exports = { id: "throws-after-import", register() {} };`,
         },
       },
       {
+        label: "rejects malformed plugin context engine registration",
+        pluginId: "context-engine-malformed",
+        body: `module.exports = { id: "context-engine-malformed", register(api) {
+  api.registerContextEngine({ id: "broken-context" });
+} };`,
+        assert: (registry: ReturnType<typeof loadOpenClawPlugins>) => {
+          expectRegistryErrorDiagnostic({
+            registry,
+            pluginId: "context-engine-malformed",
+            message: "context engine registration missing id",
+          });
+          expect(listContextEngineIds()).not.toContain("broken-context");
+        },
+      },
+      {
         label: "rejects plugin context engine ids reserved by core",
         pluginId: "context-engine-core-collision",
         body: `module.exports = { id: "context-engine-core-collision", register(api) {
@@ -5131,6 +5220,36 @@ module.exports = { id: "throws-after-import", register() {} };`,
             pluginId: "context-engine-core-collision",
             message: "context engine id reserved by core: legacy",
           });
+        },
+      },
+      {
+        label: "rejects malformed compaction provider registration",
+        pluginId: "compaction-provider-malformed",
+        body: `module.exports = { id: "compaction-provider-malformed", register(api) {
+  api.registerCompactionProvider({ id: "broken-compaction", label: "Broken" });
+} };`,
+        assert: (registry: ReturnType<typeof loadOpenClawPlugins>) => {
+          expectRegistryErrorDiagnostic({
+            registry,
+            pluginId: "compaction-provider-malformed",
+            message: 'compaction provider "broken-compaction" registration missing summarize',
+          });
+          expect(listCompactionProviderIds()).not.toContain("broken-compaction");
+        },
+      },
+      {
+        label: "rejects malformed memory prompt supplement registration",
+        pluginId: "memory-prompt-supplement-malformed",
+        body: `module.exports = { id: "memory-prompt-supplement-malformed", register(api) {
+  api.registerMemoryPromptSupplement({ id: "broken-memory-prompt" });
+} };`,
+        assert: (registry: ReturnType<typeof loadOpenClawPlugins>) => {
+          expectRegistryErrorDiagnostic({
+            registry,
+            pluginId: "memory-prompt-supplement-malformed",
+            message: "memory prompt supplement registration missing builder",
+          });
+          expect(listMemoryPromptSupplements()).toEqual([]);
         },
       },
       {
@@ -5527,7 +5646,7 @@ module.exports = { id: "throws-after-import", register() {} };`,
   });
 
   it("respects explicit disable in config", () => {
-    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    useNoBundledPlugins();
     const plugin = writePlugin({
       id: "config-disable",
       body: `module.exports = { id: "config-disable", register() {} };`,
@@ -6603,7 +6722,6 @@ module.exports = {
       {
         label: "enforces memory slot selection",
         loadRegistry: () => {
-          process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
           const memoryA = writePlugin({
             id: "memory-a",
             body: memoryPluginBody("memory-a"),
@@ -6613,15 +6731,22 @@ module.exports = {
             body: memoryPluginBody("memory-b"),
           });
 
-          return loadOpenClawPlugins({
-            cache: false,
-            config: {
-              plugins: {
-                load: { paths: [memoryA.file, memoryB.file] },
-                slots: { memory: "memory-b" },
-              },
+          return withEnv(
+            {
+              OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+              OPENCLAW_BUNDLED_PLUGINS_DIR: undefined,
             },
-          });
+            () =>
+              loadOpenClawPlugins({
+                cache: false,
+                config: {
+                  plugins: {
+                    load: { paths: [memoryA.file, memoryB.file] },
+                    slots: { memory: "memory-b" },
+                  },
+                },
+              }),
+          );
         },
         assert: (registry: ReturnType<typeof loadOpenClawPlugins>) => {
           const a = registry.plugins.find((entry) => entry.id === "memory-a");
@@ -6870,21 +6995,27 @@ module.exports = {
       {
         label: "disables memory plugins when slot is none",
         loadRegistry: () => {
-          process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
           const memory = writePlugin({
             id: "memory-off",
             body: memoryPluginBody("memory-off"),
           });
 
-          return loadOpenClawPlugins({
-            cache: false,
-            config: {
-              plugins: {
-                load: { paths: [memory.file] },
-                slots: { memory: "none" },
-              },
+          return withEnv(
+            {
+              OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+              OPENCLAW_BUNDLED_PLUGINS_DIR: undefined,
             },
-          });
+            () =>
+              loadOpenClawPlugins({
+                cache: false,
+                config: {
+                  plugins: {
+                    load: { paths: [memory.file] },
+                    slots: { memory: "none" },
+                  },
+                },
+              }),
+          );
         },
         assert: (registry: ReturnType<typeof loadOpenClawPlugins>) => {
           const entry = registry.plugins.find((item) => item.id === "memory-off");

@@ -1,14 +1,3 @@
-import {
-  ChannelType,
-  type Client,
-  InteractionCreateListener,
-  MessageCreateListener,
-  MessageReactionAddListener,
-  MessageReactionRemoveListener,
-  PresenceUpdateListener,
-  ThreadUpdateListener,
-  type User,
-} from "@buape/carbon";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import {
@@ -22,6 +11,17 @@ import {
   resolveDmGroupAccessWithLists,
 } from "openclaw/plugin-sdk/security-runtime";
 import { enqueueSystemEvent } from "openclaw/plugin-sdk/system-event-runtime";
+import {
+  ChannelType,
+  type Client,
+  InteractionCreateListener,
+  MessageCreateListener,
+  MessageReactionAddListener,
+  MessageReactionRemoveListener,
+  PresenceUpdateListener,
+  ThreadUpdateListener,
+  type User,
+} from "../internal/discord.js";
 import {
   isDiscordGroupAllowedByPolicy,
   normalizeDiscordAllowList,
@@ -38,7 +38,6 @@ import { setPresence } from "./presence-cache.js";
 import { isThreadArchived } from "./thread-bindings.discord-api.js";
 import { resolveFetchedDiscordThreadLikeChannelContext } from "./thread-channel-context.js";
 import { closeDiscordThreadSessions } from "./thread-session-close.js";
-import { normalizeDiscordListenerTimeoutMs, runDiscordTaskWithTimeout } from "./timeouts.js";
 
 type LoadedConfig = OpenClawConfig;
 type RuntimeEnv = import("openclaw/plugin-sdk/runtime-env").RuntimeEnv;
@@ -78,7 +77,7 @@ type DiscordReactionRoutingParams = {
 type DiscordReactionMode = "off" | "own" | "all" | "allowlist";
 type DiscordReactionChannelConfig = ReturnType<typeof resolveDiscordChannelConfigWithFallback>;
 type DiscordReactionIngressAccess = Awaited<ReturnType<typeof authorizeDiscordReactionIngress>>;
-type DiscordFetchedReactionMessage = { author?: User } | null;
+type DiscordFetchedReactionMessage = { author?: User | null } | null;
 
 const DISCORD_SLOW_LISTENER_THRESHOLD_MS = 30_000;
 const discordEventQueueLog = createSubsystemLogger("discord/event-queue");
@@ -141,46 +140,13 @@ async function runDiscordListenerWithSlowLog(params: {
   logger: Logger | undefined;
   listener: string;
   event: string;
-  run: (abortSignal: AbortSignal | undefined) => Promise<void>;
-  timeoutMs?: number;
+  run: () => Promise<void>;
   context?: Record<string, unknown>;
   onError?: (err: unknown) => void;
 }) {
   const startedAt = Date.now();
-  const timeoutMs = normalizeDiscordListenerTimeoutMs(params.timeoutMs);
-  const logger = params.logger ?? discordEventQueueLog;
-  let timedOut = false;
-
   try {
-    timedOut = await runDiscordTaskWithTimeout({
-      run: params.run,
-      timeoutMs,
-      onTimeout: (resolvedTimeoutMs) => {
-        logger.error(
-          danger(
-            `discord handler timed out after ${formatDurationSeconds(resolvedTimeoutMs, {
-              decimals: 1,
-              unit: "seconds",
-            })}${formatListenerContextSuffix(params.context)}`,
-          ),
-        );
-      },
-      onAbortAfterTimeout: () => {
-        logger.warn(
-          `discord handler canceled after timeout${formatListenerContextSuffix(params.context)}`,
-        );
-      },
-      onErrorAfterTimeout: (err) => {
-        logger.error(
-          danger(
-            `discord handler failed after timeout: ${String(err)}${formatListenerContextSuffix(params.context)}`,
-          ),
-        );
-      },
-    });
-    if (timedOut) {
-      return;
-    }
+    await params.run();
   } catch (err) {
     if (params.onError) {
       params.onError(err);
@@ -188,15 +154,13 @@ async function runDiscordListenerWithSlowLog(params: {
     }
     throw err;
   } finally {
-    if (!timedOut) {
-      logSlowDiscordListener({
-        logger: params.logger,
-        listener: params.listener,
-        event: params.event,
-        durationMs: Date.now() - startedAt,
-        context: params.context,
-      });
-    }
+    logSlowDiscordListener({
+      logger: params.logger,
+      listener: params.listener,
+      event: params.event,
+      durationMs: Date.now() - startedAt,
+      context: params.context,
+    });
   }
 }
 
@@ -213,17 +177,14 @@ export class DiscordMessageListener extends MessageCreateListener {
     private handler: DiscordMessageHandler,
     private logger?: Logger,
     private onEvent?: () => void,
-    _options?: { timeoutMs?: number },
   ) {
     super();
   }
 
   async handle(data: DiscordMessageEvent, client: Client) {
     this.onEvent?.();
-    // Fire-and-forget: hand off to the handler without blocking the
-    // Carbon listener.  Per-session ordering and run timeouts are owned
-    // by the inbound worker queue, so the listener no longer serializes
-    // or applies its own timeout.
+    // Fire-and-forget: hand off to the handler without blocking gateway dispatch.
+    // Per-session ordering is owned by the message run queue.
     void Promise.resolve()
       .then(() => this.handler(data, client))
       .catch((err) => {
@@ -243,9 +204,8 @@ export class DiscordInteractionListener extends InteractionCreateListener {
 
   async handle(data: DiscordInteractionEvent, client: Client) {
     this.onEvent?.();
-    // Carbon awaits interaction listeners on its critical gateway lane. Hand off
-    // immediately so slash/component handling can wait on session locks or compaction
-    // without tripping Carbon's listener timeout and dropping later gateway events.
+    // Hand off immediately so slash/component handling can wait on session locks
+    // or compaction without blocking later gateway events.
     void Promise.resolve()
       .then(() => client.handleInteraction(data as Parameters<Client["handleInteraction"]>[0], {}))
       .catch((err) => {
@@ -739,7 +699,7 @@ async function handleDiscordReactionEvent(
         memberRoleIds,
         allowNameMatching: params.allowNameMatching,
       });
-    const emitReactionWithAuthor = (message: { author?: User } | null) => {
+    const emitReactionWithAuthor = (message: DiscordFetchedReactionMessage) => {
       const { baseText } = resolveReactionBase();
       const authorLabel = message?.author ? formatDiscordUserTag(message.author) : undefined;
       const text = authorLabel ? `${baseText} from ${authorLabel}` : baseText;
@@ -827,16 +787,12 @@ export class DiscordPresenceListener extends PresenceUpdateListener {
     try {
       const userId =
         "user" in data && data.user && typeof data.user === "object" && "id" in data.user
-          ? String(data.user.id)
+          ? data.user.id
           : undefined;
       if (!userId) {
         return;
       }
-      setPresence(
-        this.accountId,
-        userId,
-        data as import("discord-api-types/v10").GatewayPresenceUpdate,
-      );
+      setPresence(this.accountId, userId, data);
     } catch (err) {
       const logger = this.logger ?? discordEventQueueLog;
       logger.error(danger(`discord presence handler failed: ${String(err)}`));

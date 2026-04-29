@@ -406,12 +406,12 @@ describe("collectForbiddenPackPaths", () => {
     expect(
       collectForbiddenPackPaths([
         "dist/index.js",
-        bundledDistPluginFile("discord", "node_modules/@buape/carbon/index.js"),
+        bundledDistPluginFile("discord", "node_modules/@discordjs/voice/index.js"),
         bundledPluginFile("tlon", "node_modules/.bin/tlon"),
         "node_modules/.bin/openclaw",
       ]),
     ).toEqual([
-      bundledDistPluginFile("discord", "node_modules/@buape/carbon/index.js"),
+      bundledDistPluginFile("discord", "node_modules/@discordjs/voice/index.js"),
       bundledPluginFile("tlon", "node_modules/.bin/tlon"),
       "node_modules/.bin/openclaw",
     ]);
@@ -554,6 +554,7 @@ describe("collectMissingPackPaths", () => {
         "dist/control-ui/index.html",
         "scripts/npm-runner.mjs",
         "scripts/preinstall-package-manager-warning.mjs",
+        "scripts/lib/package-dist-imports.mjs",
         "scripts/postinstall-bundled-plugins.mjs",
         "dist/task-registry-control.runtime.js",
         bundledDistPluginFile("diffs", "assets/viewer-runtime.js"),
@@ -583,6 +584,7 @@ describe("collectMissingPackPaths", () => {
         ...WORKSPACE_TEMPLATE_PACK_PATHS,
         "scripts/npm-runner.mjs",
         "scripts/preinstall-package-manager-warning.mjs",
+        "scripts/lib/package-dist-imports.mjs",
         "scripts/postinstall-bundled-plugins.mjs",
         "dist/plugin-sdk/root-alias.cjs",
         "dist/task-registry-control.runtime.js",

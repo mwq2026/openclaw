@@ -15,6 +15,7 @@ import {
 } from "discord-api-types/v10";
 import * as ws from "ws";
 import { Plugin, type Client } from "./client.js";
+import { canResumeAfterGatewayClose, isFatalGatewayCloseCode } from "./gateway-close-codes.js";
 import { dispatchVoiceGatewayEvent, mapGatewayDispatchData } from "./gateway-dispatch.js";
 import { sharedGatewayIdentifyLimiter } from "./gateway-identify-limiter.js";
 import { GatewayHeartbeatTimers, GatewayReconnectTimer } from "./gateway-lifecycle.js";
@@ -68,25 +69,6 @@ function decodeGatewayMessage(incoming: unknown): GatewayReceivePayload | null {
   } catch {
     return null;
   }
-}
-
-function isFatalGatewayCloseCode(code: GatewayCloseCodes): boolean {
-  return (
-    code === GatewayCloseCodes.AuthenticationFailed ||
-    code === GatewayCloseCodes.InvalidShard ||
-    code === GatewayCloseCodes.ShardingRequired ||
-    code === GatewayCloseCodes.InvalidAPIVersion ||
-    code === GatewayCloseCodes.InvalidIntents ||
-    code === GatewayCloseCodes.DisallowedIntents
-  );
-}
-
-function canResumeAfterGatewayClose(code: GatewayCloseCodes): boolean {
-  return (
-    code !== GatewayCloseCodes.NotAuthenticated &&
-    code !== GatewayCloseCodes.InvalidSeq &&
-    code !== GatewayCloseCodes.SessionTimedOut
-  );
 }
 
 export class GatewayPlugin extends Plugin {
@@ -157,11 +139,11 @@ export class GatewayPlugin extends Plugin {
   }
 
   connect(resume = false): void {
+    this.stopReconnectTimer();
+    this.stopHeartbeat();
     if (this.isConnecting) {
       return;
     }
-    this.stopReconnectTimer();
-    this.stopHeartbeat();
     this.shouldReconnect = true;
     this.lastHeartbeatAck = true;
     this.ws?.close(1000, "Reconnecting");
@@ -232,7 +214,11 @@ export class GatewayPlugin extends Plugin {
         this.emitter.emit("error", new Error(`Fatal gateway close code: ${code}`));
         return;
       }
-      this.scheduleReconnect(canResumeAfterGatewayClose(closeCode));
+      const canResume = canResumeAfterGatewayClose(closeCode);
+      if (!canResume) {
+        this.resetSessionState();
+      }
+      this.scheduleReconnect(canResume, closeCode);
     });
     socket.on("error", (error) => {
       if (socket !== this.ws) {
@@ -282,6 +268,9 @@ export class GatewayPlugin extends Plugin {
         });
         break;
       case GatewayOpcodes.InvalidSession:
+        if (!payload.d) {
+          this.resetSessionState();
+        }
         this.scheduleReconnect(payload.d);
         break;
       case GatewayOpcodes.Reconnect:
@@ -382,7 +371,13 @@ export class GatewayPlugin extends Plugin {
     }
   }
 
-  private scheduleReconnect(resume: boolean): void {
+  private resetSessionState(): void {
+    this.sessionId = null;
+    this.resumeGatewayUrl = null;
+    this.sequence = null;
+  }
+
+  private scheduleReconnect(resume: boolean, closeCode?: number): void {
     if (!this.shouldReconnect) {
       return;
     }
@@ -395,7 +390,13 @@ export class GatewayPlugin extends Plugin {
     this.outboundLimiter.clear();
     this.reconnectAttempts += 1;
     if (this.reconnectAttempts > (this.options.reconnect?.maxAttempts ?? 50)) {
-      this.emitter.emit("error", new Error("Max reconnect attempts reached"));
+      const maxAttempts = this.options.reconnect?.maxAttempts ?? 50;
+      this.emitter.emit(
+        "error",
+        new Error(
+          `Max reconnect attempts (${maxAttempts}) reached${closeCode !== undefined ? ` after close code ${closeCode}` : ""}`,
+        ),
+      );
       return;
     }
     const delay = Math.min(30_000, 1_000 * 2 ** Math.min(this.reconnectAttempts, 5));

@@ -24,6 +24,8 @@ const BLOCKED_WORKSPACE_DOTENV_KEYS = new Set([
   "CLAWHUB_URL",
   "HTTP_PROXY",
   "HTTPS_PROXY",
+  "HOMEBREW_BREW_FILE",
+  "HOMEBREW_PREFIX",
   "IRC_HOST",
   "MATTERMOST_URL",
   "MATRIX_HOMESERVER",
@@ -165,23 +167,6 @@ function readDotEnvFile(params: {
     entries.push({ key, value });
   }
   return { filePath: params.filePath, entries };
-}
-
-export function loadRuntimeDotEnvFile(filePath: string, opts?: { quiet?: boolean }) {
-  const parsed = readDotEnvFile({
-    filePath,
-    shouldBlockKey: shouldBlockRuntimeDotEnvKey,
-    quiet: opts?.quiet ?? true,
-  });
-  if (!parsed) {
-    return;
-  }
-  for (const { key, value } of parsed.entries) {
-    if (process.env[key] !== undefined) {
-      continue;
-    }
-    process.env[key] = value;
-  }
 }
 
 export function loadWorkspaceDotEnvFile(filePath: string, opts?: { quiet?: boolean }) {

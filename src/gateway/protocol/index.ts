@@ -57,6 +57,8 @@ import {
   AgentWaitParamsSchema,
   type ChannelsStartParams,
   ChannelsStartParamsSchema,
+  type ChannelsStopParams,
+  ChannelsStopParamsSchema,
   type ChannelsLogoutParams,
   ChannelsLogoutParamsSchema,
   type TalkConfigParams,
@@ -254,6 +256,8 @@ import {
   SessionsAbortParamsSchema,
   type SessionsCompactParams,
   SessionsCompactParamsSchema,
+  type SessionsCleanupParams,
+  SessionsCleanupParamsSchema,
   type SessionsCompactionBranchParams,
   SessionsCompactionBranchParamsSchema,
   type SessionsCompactionGetParams,
@@ -442,6 +446,9 @@ export const validateSecretsResolveResult = ajv.compile<SecretsResolveResult>(
   SecretsResolveResultSchema,
 );
 export const validateSessionsListParams = ajv.compile<SessionsListParams>(SessionsListParamsSchema);
+export const validateSessionsCleanupParams = ajv.compile<SessionsCleanupParams>(
+  SessionsCleanupParamsSchema,
+);
 export const validateSessionsPreviewParams = ajv.compile<SessionsPreviewParams>(
   SessionsPreviewParamsSchema,
 );
@@ -528,6 +535,7 @@ export const validateChannelsStatusParams = ajv.compile<ChannelsStatusParams>(
 );
 export const validateChannelsStartParams =
   ajv.compile<ChannelsStartParams>(ChannelsStartParamsSchema);
+export const validateChannelsStopParams = ajv.compile<ChannelsStopParams>(ChannelsStopParamsSchema);
 export const validateChannelsLogoutParams = ajv.compile<ChannelsLogoutParams>(
   ChannelsLogoutParamsSchema,
 );
@@ -690,6 +698,7 @@ export {
   NodePendingEnqueueParamsSchema,
   NodePendingEnqueueResultSchema,
   SessionsListParamsSchema,
+  SessionsCleanupParamsSchema,
   SessionsPreviewParamsSchema,
   SessionsResolveParamsSchema,
   SessionsCompactionListParamsSchema,
@@ -740,6 +749,7 @@ export {
   ChannelsStatusParamsSchema,
   ChannelsStatusResultSchema,
   ChannelsStartParamsSchema,
+  ChannelsStopParamsSchema,
   ChannelsLogoutParamsSchema,
   WebLoginStartParamsSchema,
   WebLoginWaitParamsSchema,
@@ -854,6 +864,7 @@ export type {
   ChannelsStatusParams,
   ChannelsStatusResult,
   ChannelsStartParams,
+  ChannelsStopParams,
   ChannelsLogoutParams,
   WebLoginStartParams,
   WebLoginWaitParams,
@@ -913,6 +924,7 @@ export type {
   NodePendingEnqueueParams,
   NodePendingEnqueueResult,
   SessionsListParams,
+  SessionsCleanupParams,
   SessionsPreviewParams,
   SessionsResolveParams,
   SessionsPatchParams,

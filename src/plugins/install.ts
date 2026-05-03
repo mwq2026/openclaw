@@ -8,6 +8,11 @@ import {
 } from "../infra/install-source-utils.js";
 import { resolveNpmIntegrityDriftWithDefaultMessage } from "../infra/npm-integrity.js";
 import {
+  removeManagedNpmRootDependency,
+  resolveManagedNpmRootDependencySpec,
+  upsertManagedNpmRootDependency,
+} from "../infra/npm-managed-root.js";
+import {
   formatPrereleaseResolutionError,
   isPrereleaseResolutionAllowed,
   parseRegistryNpmSpec,
@@ -197,6 +202,55 @@ function buildBlockedInstallResult(params: {
         ? { code: PLUGIN_INSTALL_ERROR_CODE.SECURITY_SCAN_BLOCKED }
         : {}),
   };
+}
+
+async function rollbackManagedNpmPluginInstall(params: {
+  npmRoot: string;
+  packageName: string;
+  targetDir: string;
+  timeoutMs: number;
+  logger: PluginInstallLogger;
+}): Promise<void> {
+  try {
+    await runCommandWithTimeout(
+      [
+        "npm",
+        "uninstall",
+        "--loglevel=error",
+        "--ignore-scripts",
+        "--no-audit",
+        "--no-fund",
+        "--prefix",
+        params.npmRoot,
+        params.packageName,
+      ],
+      {
+        timeoutMs: Math.max(params.timeoutMs, 300_000),
+        env: createSafeNpmInstallEnv(process.env, { packageLock: true, quiet: true }),
+      },
+    );
+  } catch (error) {
+    params.logger.warn?.(
+      `Failed to run npm uninstall rollback for ${params.packageName}: ${String(error)}`,
+    );
+  }
+  try {
+    await fs.rm(params.targetDir, { recursive: true, force: true });
+  } catch (error) {
+    params.logger.warn?.(
+      `Failed to remove failed plugin install directory ${params.targetDir}: ${String(error)}`,
+    );
+  }
+  try {
+    await removeManagedNpmRootDependency({
+      npmRoot: params.npmRoot,
+      packageName: params.packageName,
+    });
+  } catch (error) {
+    params.logger.warn?.(
+      `Failed to remove managed npm dependency ${params.packageName}: ${String(error)}`,
+    );
+  }
 }
 
 type PackageInstallCommonParams = InstallSafetyOverrides & {
@@ -745,6 +799,9 @@ async function scanAndLinkInstalledPackage(params: {
     subject: `Plugin "${params.pluginId}"`,
     scan: async () =>
       await params.runtime.scanInstalledPackageDependencyTree({
+        allowManagedNpmRootPackagePeerSymlinks:
+          params.dependencyScanRootDir !== undefined &&
+          path.resolve(params.dependencyScanRootDir) !== path.resolve(params.installedDir),
         logger: params.logger,
         packageDir: params.dependencyScanRootDir ?? params.installedDir,
         pluginId: params.pluginId,
@@ -1149,7 +1206,14 @@ export async function installPluginFromNpmSpec(
   }
 
   logger.info?.(`Installing ${spec} into ${npmRoot}…`);
-  await fs.mkdir(npmRoot, { recursive: true });
+  await upsertManagedNpmRootDependency({
+    npmRoot,
+    packageName: parsedSpec.name,
+    dependencySpec: resolveManagedNpmRootDependencySpec({
+      parsedSpec,
+      resolution: npmResolution,
+    }),
+  });
   const install = await runCommandWithTimeout(
     [
       "npm",
@@ -1161,7 +1225,6 @@ export async function installPluginFromNpmSpec(
       }),
       "--prefix",
       npmRoot,
-      spec,
     ],
     {
       timeoutMs: Math.max(timeoutMs, 300_000),
@@ -1169,6 +1232,10 @@ export async function installPluginFromNpmSpec(
     },
   );
   if (install.code !== 0) {
+    await removeManagedNpmRootDependency({
+      npmRoot,
+      packageName: parsedSpec.name,
+    });
     return {
       ok: false,
       error: `npm install failed: ${install.stderr.trim() || install.stdout.trim()}`,
@@ -1181,6 +1248,7 @@ export async function installPluginFromNpmSpec(
     dependencyScanRootDir: npmRoot,
     logger,
     expectedPluginId,
+    trustedSourceLinkedOfficialInstall: params.trustedSourceLinkedOfficialInstall,
     mode: effectiveMode,
     installPolicyRequest: {
       kind: "plugin-npm",
@@ -1188,6 +1256,13 @@ export async function installPluginFromNpmSpec(
     },
   });
   if (!result.ok) {
+    await rollbackManagedNpmPluginInstall({
+      npmRoot,
+      packageName: parsedSpec.name,
+      targetDir: installRoot,
+      timeoutMs,
+      logger,
+    });
     return result;
   }
   return {

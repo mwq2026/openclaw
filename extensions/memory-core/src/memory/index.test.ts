@@ -275,11 +275,10 @@ describe("memory index", () => {
     result: Awaited<ReturnType<typeof getMemorySearchManager>>,
     missingMessage = "manager missing",
   ): MemoryIndexManager {
-    expect(result.manager).not.toBeNull();
     if (!result.manager) {
       throw new Error(missingMessage);
     }
-    return result.manager as MemoryIndexManager;
+    return result.manager as unknown as MemoryIndexManager;
   }
 
   async function getPersistentManager(cfg: TestCfg): Promise<MemoryIndexManager> {
@@ -429,7 +428,7 @@ describe("memory index", () => {
     const available = await manager.probeVectorStoreAvailability?.();
     const status = manager.status();
 
-    expect(providerCalls).toEqual([]);
+    expect(providerCalls).toStrictEqual([]);
     expect(typeof status.vector?.storeAvailable).toBe("boolean");
     expect(status.vector?.storeAvailable).toBe(available);
     expect(status.vector?.semanticAvailable).toBeUndefined();
@@ -452,15 +451,22 @@ describe("memory index", () => {
     );
     managersForCleanup.add(second);
 
-    expect(second.getCachedEmbeddingAvailability?.()).toEqual(
-      expect.objectContaining({
-        ok: true,
-        checked: true,
-        cached: true,
-        checkedAtMs: expect.any(Number),
-        cacheExpiresAtMs: expect.any(Number),
-      }),
-    );
+    const cachedBeforeProbe = second.getCachedEmbeddingAvailability?.();
+    expect(cachedBeforeProbe).toMatchObject({
+      ok: true,
+      checked: true,
+      cached: true,
+    });
+    expect(cachedBeforeProbe?.checkedAtMs).toBeTypeOf("number");
+    expect(cachedBeforeProbe?.cacheExpiresAtMs).toBeTypeOf("number");
+    if (
+      typeof cachedBeforeProbe?.checkedAtMs === "number" &&
+      typeof cachedBeforeProbe.cacheExpiresAtMs === "number"
+    ) {
+      expect(cachedBeforeProbe.cacheExpiresAtMs - cachedBeforeProbe.checkedAtMs).toBe(
+        EMBEDDING_PROBE_CACHE_TTL_MS,
+      );
+    }
     await expect(second.probeEmbeddingAvailability()).resolves.toEqual(
       expect.objectContaining({ ok: true, cached: true }),
     );

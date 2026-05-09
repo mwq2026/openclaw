@@ -75,7 +75,7 @@ describe("buildQaRuntimeEnv", () => {
       }),
     ).rejects.toThrow("node missing");
 
-    await expect(readdir(tempParent)).resolves.toEqual([]);
+    await expect(readdir(tempParent)).resolves.toStrictEqual([]);
   });
 
   it("keeps the slow-reply QA opt-out enabled under fast mode", () => {
@@ -972,10 +972,6 @@ describe("qa bundled plugin dir", () => {
     expect(stagedRoot).toBe(
       path.join(repoRoot, ".artifacts", "qa-runtime", path.basename(tempRoot)),
     );
-    expect(stagedRoot).not.toBeNull();
-    if (!stagedRoot) {
-      throw new Error("expected staged runtime root");
-    }
     await expect(readFile(path.join(stagedRoot, "package.json"), "utf8")).resolves.toContain(
       '"name": "openclaw"',
     );

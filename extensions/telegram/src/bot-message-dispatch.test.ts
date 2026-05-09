@@ -468,6 +468,38 @@ describe("dispatchTelegramMessage draft streaming", () => {
     expect(draftStream.clear).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps retained overflow draft previews", async () => {
+    const draftStream = createDraftStream();
+    const bot = createBot();
+    createTelegramDraftStream.mockReturnValue(draftStream);
+    dispatchReplyWithBufferedBlockDispatcher.mockImplementation(
+      async ({ dispatcherOptions, replyOptions }) => {
+        await replyOptions?.onPartialReply?.({ text: "Hello" });
+        await dispatcherOptions.deliver({ text: "Hello" }, { kind: "final" });
+        return { queuedFinal: true };
+      },
+    );
+    deliverReplies.mockResolvedValue({ delivered: true });
+
+    await dispatchWithContext({ context: createContext(), bot });
+
+    const streamParams = createTelegramDraftStream.mock.calls[0]?.[0] as Parameters<
+      NonNullable<TelegramBotDeps["createTelegramDraftStream"]>
+    >[0];
+    streamParams.onSupersededPreview?.({
+      messageId: 17,
+      textSnapshot: "first page",
+      retain: true,
+    });
+    expect(bot.api.deleteMessage).not.toHaveBeenCalled();
+
+    streamParams.onSupersededPreview?.({
+      messageId: 18,
+      textSnapshot: "stale page",
+    });
+    await vi.waitFor(() => expect(bot.api.deleteMessage).toHaveBeenCalledWith(123, 18));
+  });
+
   it("queues final Telegram replies through outbound delivery when available", async () => {
     deliverInboundReplyWithMessageSendContext.mockResolvedValue({
       status: "handled_visible",
@@ -1272,11 +1304,11 @@ describe("dispatchTelegramMessage draft streaming", () => {
   });
 
   it("does not supersede the same session for unauthorized abort-looking commands", async () => {
-    let releaseFirstFinal!: () => void;
+    let releaseFirstFinal: (() => void) | undefined;
     const firstFinalGate = new Promise<void>((resolve) => {
       releaseFirstFinal = resolve;
     });
-    let resolveStreamVisible!: () => void;
+    let resolveStreamVisible: (() => void) | undefined;
     const streamVisible = new Promise<void>((resolve) => {
       resolveStreamVisible = resolve;
     });
@@ -1285,6 +1317,9 @@ describe("dispatchTelegramMessage draft streaming", () => {
       messageId: 1001,
       onUpdate: (text) => {
         if (text === "Old reply partial") {
+          if (!resolveStreamVisible) {
+            throw new Error("Expected Telegram stream-visible resolver to be initialized");
+          }
           resolveStreamVisible();
         }
       },
@@ -1335,6 +1370,9 @@ describe("dispatchTelegramMessage draft streaming", () => {
 
     await unauthorizedReplyDelivered;
 
+    if (!releaseFirstFinal) {
+      throw new Error("Expected first Telegram final release callback to be initialized");
+    }
     releaseFirstFinal();
     await Promise.all([firstPromise, unauthorizedPromise]);
 

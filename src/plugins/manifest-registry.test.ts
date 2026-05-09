@@ -1365,6 +1365,29 @@ describe("loadPluginManifestRegistry", () => {
     );
   });
 
+  it("prefers providerCatalogEntry over legacy providerDiscoveryEntry", () => {
+    const dir = makeTempDir();
+    writeManifest(dir, {
+      id: "catalog-provider",
+      providers: ["catalog-provider"],
+      providerCatalogEntry: "./provider-catalog.ts",
+      providerDiscoveryEntry: "./provider-discovery.ts",
+      configSchema: { type: "object" },
+    });
+    fs.writeFileSync(path.join(dir, "provider-catalog.js"), "export default {};\n", "utf8");
+    fs.writeFileSync(path.join(dir, "provider-discovery.js"), "export default {};\n", "utf8");
+
+    const registry = loadSingleCandidateRegistry({
+      idHint: "catalog-provider",
+      rootDir: dir,
+      origin: "bundled",
+    });
+
+    expect(registry.plugins[0]?.providerDiscoverySource).toBe(
+      path.join(dir, "provider-catalog.js"),
+    );
+  });
+
   it("preserves activation and setup descriptors from plugin manifests", () => {
     const dir = makeTempDir();
     writeManifest(dir, {
@@ -1877,7 +1900,7 @@ describe("loadPluginManifestRegistry", () => {
       ...(env ? { env } : {}),
     });
 
-    expect(registry.plugins).toEqual([]);
+    expect(registry.plugins).toStrictEqual([]);
     expectRegistryDiagnosticContains(registry, expectedMessage);
     if (expectWarn) {
       expect(registry.diagnostics.map((diag) => diag.level)).toContain("warn");
@@ -2227,6 +2250,31 @@ describe("loadPluginManifestRegistry", () => {
     expectUnsafeWorkspaceManifestRejected({ id: "unsafe-hardlink", mode: "hardlink" });
   });
 
+  it("still rejects config manifest hardlinks outside the Nix store in Nix mode", () => {
+    if (process.platform === "win32") {
+      return;
+    }
+    const fixture = prepareLinkedManifestFixture({
+      id: "unsafe-config-hardlink",
+      mode: "hardlink",
+    });
+    if (!fixture.linked) {
+      return;
+    }
+    const registry = loadPluginManifestRegistry({
+      env: hermeticEnv({ OPENCLAW_NIX_MODE: "1" }),
+      candidates: [
+        createPluginCandidate({
+          idHint: "unsafe-config-hardlink",
+          rootDir: fixture.rootDir,
+          origin: "config",
+        }),
+      ],
+    });
+    expect(registry.plugins).toHaveLength(0);
+    expect(hasUnsafeManifestDiagnostic(registry)).toBe(true);
+  });
+
   it("allows bundled manifest paths that are hardlinked aliases", () => {
     if (process.platform === "win32") {
       return;
@@ -2327,7 +2375,7 @@ describe("loadPluginManifestRegistry", () => {
       }),
     });
 
-    expect(olderHost.plugins).toEqual([]);
+    expect(olderHost.plugins).toStrictEqual([]);
     expect(olderHost.diagnostics.map((diag) => diag.message)).toEqual(
       expect.arrayContaining([expect.stringContaining("this host is 2026.3.21")]),
     );

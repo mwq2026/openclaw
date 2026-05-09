@@ -923,6 +923,8 @@ describe("isFailoverErrorMessage", () => {
       "terminated",
       "Terminated",
       "  terminated  ",
+      "stream_read_error",
+      "  stream_read_error  ",
       "UND_ERR_SOCKET",
       "Error: UND_ERR_SOCKET other side closed",
       "UND_ERR_CONNECT_TIMEOUT",
@@ -963,10 +965,11 @@ describe("image dimension errors", () => {
     const raw =
       '400 {"type":"error","error":{"type":"invalid_request_error","message":"messages.84.content.1.image.source.base64.data: At least one of the image dimensions exceed max allowed size for many-image requests: 2000 pixels"}}';
     const parsed = parseImageDimensionError(raw);
-    expect(parsed).not.toBeNull();
-    expect(parsed?.maxDimensionPx).toBe(2000);
-    expect(parsed?.messageIndex).toBe(84);
-    expect(parsed?.contentIndex).toBe(1);
+    expect(parsed).toMatchObject({
+      maxDimensionPx: 2000,
+      messageIndex: 84,
+      contentIndex: 1,
+    });
     expect(isImageDimensionErrorMessage(raw)).toBe(true);
   });
 });
@@ -1150,6 +1153,15 @@ describe("classifyFailoverReason provider messages", () => {
       ),
     ).toBe("timeout");
     expect(classifyFailoverReason("string should match pattern")).toBe("format");
+    expect(
+      classifyFailoverReason(
+        "This model does not support assistant message prefill. The conversation must end with a user message.",
+      ),
+    ).toBe("format");
+    expect(
+      classifyFailoverReason("LLM request rejected: does not support assistant message prefill"),
+    ).toBe("format");
+    expect(classifyFailoverReason("conversation must end with a user message")).toBe("format");
     expect(classifyFailoverReason("bad request")).toBeNull();
     expect(
       classifyFailoverReason(

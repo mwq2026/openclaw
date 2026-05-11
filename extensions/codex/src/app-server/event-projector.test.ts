@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness";
 import { resetAgentEventsForTest } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
@@ -17,6 +17,7 @@ import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtim
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CodexAppServerEventProjector,
+  type CodexAppServerEventProjectorOptions,
   type CodexAppServerToolTelemetry,
 } from "./event-projector.js";
 import { rememberCodexRateLimits, resetCodexRateLimitCacheForTests } from "./rate-limit-cache.js";
@@ -72,9 +73,10 @@ async function createParams(): Promise<EmbeddedRunAttemptParams> {
 
 async function createProjector(
   params?: EmbeddedRunAttemptParams,
+  options?: CodexAppServerEventProjectorOptions,
 ): Promise<CodexAppServerEventProjector> {
   const resolvedParams = params ?? (await createParams());
-  return new CodexAppServerEventProjector(resolvedParams, THREAD_ID, TURN_ID);
+  return new CodexAppServerEventProjector(resolvedParams, THREAD_ID, TURN_ID, options);
 }
 
 async function createProjectorWithAssistantHooks() {
@@ -523,6 +525,33 @@ describe("CodexAppServerEventProjector", () => {
 
     expect(result.promptError).toContain("You've reached your Codex subscription usage limit.");
     expect(result.promptError).toContain("Next reset in");
+    expect(result.promptErrorSource).toBe("prompt");
+  });
+
+  it("preserves Codex retry hints when failed turns omit structured reset details", async () => {
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("turn/completed", {
+        turn: {
+          id: TURN_ID,
+          status: "failed",
+          error: {
+            message:
+              "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at May 11th, 2026 9:00 AM.",
+            codexErrorInfo: "usageLimitExceeded",
+            additionalDetails: null,
+          },
+          items: [],
+        },
+      }),
+    );
+
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+
+    expect(result.promptError).toContain("You've reached your Codex subscription usage limit.");
+    expect(result.promptError).toContain("Codex says to try again at May 11th, 2026 9:00 AM.");
+    expect(result.promptError).not.toContain("Codex did not return a reset time");
     expect(result.promptErrorSource).toBe("prompt");
   });
 
@@ -1005,6 +1034,128 @@ describe("CodexAppServerEventProjector", () => {
         toolCallId: "cmd-declined",
       },
     ]);
+  });
+
+  it("emits after_tool_call observations for Codex-native tool item completions", async () => {
+    const afterToolCall = vi.fn();
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "after_tool_call", handler: afterToolCall }]),
+    );
+    const projector = await createProjector({
+      ...(await createParams()),
+      agentId: "main",
+      sessionKey: "agent:main:session-1",
+    });
+
+    await projector.handleNotification(
+      forCurrentTurn("item/started", {
+        item: {
+          type: "commandExecution",
+          id: "cmd-observed",
+          command: "pnpm test extensions/codex",
+          cwd: "/workspace",
+          processId: null,
+          source: "agent",
+          status: "inProgress",
+          commandActions: [],
+          aggregatedOutput: null,
+          exitCode: null,
+          durationMs: null,
+        },
+      }),
+    );
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          type: "commandExecution",
+          id: "cmd-observed",
+          command: "pnpm test extensions/codex",
+          cwd: "/workspace",
+          processId: null,
+          source: "agent",
+          status: "completed",
+          commandActions: [],
+          aggregatedOutput: "ok",
+          exitCode: 0,
+          durationMs: 42,
+        },
+      }),
+    );
+
+    await vi.waitFor(() => expect(afterToolCall).toHaveBeenCalledTimes(1));
+    const event = requireRecord(
+      mockCallArg(afterToolCall, 0, 0, "after_tool_call event"),
+      "after_tool_call event",
+    );
+    expect(event.toolName).toBe("bash");
+    expect(event.params).toEqual({ command: "pnpm test extensions/codex", cwd: "/workspace" });
+    expect(event.runId).toBe("run-1");
+    expect(event.toolCallId).toBe("cmd-observed");
+    expect(event.result).toEqual({ status: "completed", exitCode: 0, durationMs: 42 });
+    expect(event.durationMs).toBeGreaterThanOrEqual(42);
+    const context = requireRecord(
+      mockCallArg(afterToolCall, 0, 1, "after_tool_call context"),
+      "after_tool_call context",
+    );
+    expect(context.agentId).toBe("main");
+    expect(context.sessionId).toBe("session-1");
+    expect(context.sessionKey).toBe("agent:main:session-1");
+    expect(context.runId).toBe("run-1");
+    expect(context.toolName).toBe("bash");
+    expect(context.toolCallId).toBe("cmd-observed");
+  });
+
+  it("does not duplicate native items already covered by PostToolUse relay", async () => {
+    const afterToolCall = vi.fn();
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "after_tool_call", handler: afterToolCall }]),
+    );
+    const projector = await createProjector(
+      { ...(await createParams()), sessionKey: "agent:main:session-1" },
+      { nativePostToolUseRelayEnabled: true },
+    );
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          type: "commandExecution",
+          id: "cmd-relayed",
+          command: "pnpm test extensions/codex",
+          cwd: "/workspace",
+          processId: null,
+          source: "agent",
+          status: "completed",
+          commandActions: [],
+          aggregatedOutput: "ok",
+          exitCode: 0,
+          durationMs: 42,
+        },
+      }),
+    );
+    expect(afterToolCall).not.toHaveBeenCalled();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          type: "webSearch",
+          id: "search-observed",
+          query: "native tool observability",
+          status: "completed",
+          durationMs: 5,
+        },
+      }),
+    );
+
+    await vi.waitFor(() => expect(afterToolCall).toHaveBeenCalledTimes(1));
+    const event = requireRecord(
+      mockCallArg(afterToolCall, 0, 0, "after_tool_call event"),
+      "after_tool_call event",
+    );
+    expect(event.toolName).toBe("web_search");
+    expect(event.params).toEqual({ query: "native tool observability" });
+    expect(event.runId).toBe("run-1");
+    expect(event.toolCallId).toBe("search-observed");
+    expect(event.result).toEqual({ status: "completed" });
   });
 
   it("records dynamic OpenClaw tool calls in mirrored transcript snapshots", async () => {

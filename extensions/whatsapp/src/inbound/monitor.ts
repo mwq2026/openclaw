@@ -5,7 +5,7 @@ import type {
   GroupMetadata,
   WAMessage,
   WASocket,
-} from "@whiskeysockets/baileys";
+} from "baileys";
 import { recordChannelActivity } from "openclaw/plugin-sdk/channel-activity-runtime";
 import { formatLocationText } from "openclaw/plugin-sdk/channel-inbound";
 import { createInboundDebouncer } from "openclaw/plugin-sdk/channel-inbound-debounce";
@@ -135,6 +135,7 @@ function isNonEmptyString(value: string | undefined): value is string {
 
 type MonitorWebInboxOptions = {
   cfg: OpenClawConfig;
+  loadConfig?: () => OpenClawConfig;
   verbose: boolean;
   accountId: string;
   authDir: string;
@@ -548,8 +549,9 @@ export async function attachWebInboxToSocket(
       ? Number(msg.messageTimestamp) * 1000
       : undefined;
 
+    const accessCfg = options.loadConfig?.() ?? options.cfg;
     const access = await checkInboundAccessControl({
-      cfg: options.cfg,
+      cfg: accessCfg,
       accountId: options.accountId,
       from,
       selfE164: self.e164 ?? null,
@@ -839,9 +841,7 @@ export async function attachWebInboxToSocket(
       await enqueueInboundMessage(msg, inbound, enriched);
     }
   };
-  const handleConnectionUpdate = (
-    update: Partial<import("@whiskeysockets/baileys").ConnectionState>,
-  ) => {
+  const handleConnectionUpdate = (update: Partial<import("baileys").ConnectionState>) => {
     try {
       if (update.connection === "close") {
         if (options.socketRef?.current === sock) {

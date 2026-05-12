@@ -133,7 +133,7 @@ describe("getReplyFromConfig fast test bootstrap", () => {
     expect(mocks.initSessionState).not.toHaveBeenCalled();
     expect(mocks.resolveReplyDirectives).not.toHaveBeenCalled();
     expect(vi.mocked(runPreparedReplyMock)).toHaveBeenCalledOnce();
-    const preparedReplyParams = vi.mocked(runPreparedReplyMock).mock.calls[0]?.[0];
+    const preparedReplyParams = vi.mocked(runPreparedReplyMock).mock.calls.at(0)?.[0];
     if (!preparedReplyParams) {
       throw new Error("expected prepared reply params");
     }
@@ -336,9 +336,11 @@ describe("getReplyFromConfig fast test bootstrap", () => {
       cfg,
     );
 
-    expect(reply).toEqual(
-      expect.objectContaining({ text: expect.stringContaining("Think: high") }),
-    );
+    expect(Array.isArray(reply)).toBe(false);
+    if (!reply || Array.isArray(reply)) {
+      throw new Error("expected single reply payload");
+    }
+    expect(reply.text).toContain("Think: high");
     expect(mocks.loadModelCatalog).not.toHaveBeenCalled();
     expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
     expect(mocks.initSessionState).not.toHaveBeenCalled();
@@ -391,9 +393,11 @@ describe("getReplyFromConfig fast test bootstrap", () => {
       cfg,
     );
 
-    expect(reply).toEqual(
-      expect.objectContaining({ text: expect.stringContaining("Think: xhigh") }),
-    );
+    expect(Array.isArray(reply)).toBe(false);
+    if (!reply || Array.isArray(reply)) {
+      throw new Error("expected single reply payload");
+    }
+    expect(reply.text).toContain("Think: xhigh");
     expect(mocks.loadModelCatalog).not.toHaveBeenCalled();
     expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
     expect(mocks.initSessionState).not.toHaveBeenCalled();
@@ -439,7 +443,7 @@ describe("getReplyFromConfig fast test bootstrap", () => {
     expect(mocks.initSessionState).not.toHaveBeenCalled();
     expect(vi.mocked(runPreparedReplyMock)).not.toHaveBeenCalled();
     expect(mocks.resolveReplyDirectives).toHaveBeenCalledOnce();
-    const directiveParams = mocks.resolveReplyDirectives.mock.calls[0]?.[0] as
+    const directiveParams = mocks.resolveReplyDirectives.mock.calls.at(0)?.[0] as
       | { sessionKey?: string; workspaceDir?: string }
       | undefined;
     if (!directiveParams) {

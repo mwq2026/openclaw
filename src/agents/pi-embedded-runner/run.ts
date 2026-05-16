@@ -22,7 +22,6 @@ import { sanitizeForLog } from "../../terminal/ansi.js";
 import { resolveUserPath } from "../../utils.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
 import {
-  hasConfiguredModelFallbacks,
   resolveAgentExecutionContract,
   resolveAgentDir,
   resolveSessionAgentIds,
@@ -120,6 +119,7 @@ import { resolveAuthProfileFailureReason } from "./run/auth-profile-failure-poli
 import { runEmbeddedAttemptWithBackend } from "./run/backend.js";
 import { createFailoverDecisionLogger } from "./run/failover-observation.js";
 import { mergeRetryFailoverReason, resolveRunFailoverDecision } from "./run/failover-policy.js";
+import { hasEmbeddedRunConfiguredModelFallbacks } from "./run/fallbacks.js";
 import {
   buildErrorAgentMeta,
   buildUsageAgentMetaFields,
@@ -479,10 +479,11 @@ export async function runEmbeddedPiAgent(
       const agentDir =
         params.agentDir ?? resolveAgentDir(params.config ?? {}, workspaceResolution.agentId);
       const normalizedSessionKey = params.sessionKey?.trim();
-      const fallbackConfigured = hasConfiguredModelFallbacks({
+      const fallbackConfigured = hasEmbeddedRunConfiguredModelFallbacks({
         cfg: params.config,
         agentId: params.agentId,
         sessionKey: normalizedSessionKey,
+        modelFallbacksOverride: params.modelFallbacksOverride,
       });
       const resolvedSessionKey = normalizedSessionKey;
       const hookRunner = getGlobalHookRunner();
@@ -538,6 +539,7 @@ export async function runEmbeddedPiAgent(
         config: params.config,
         agentId: params.agentId,
         sessionKey: params.sessionKey,
+        agentHarnessRuntimeOverride: params.agentHarnessRuntimeOverride,
         workspaceDir: resolvedWorkspace,
       });
       const agentHarness = selectAgentHarness({
@@ -547,6 +549,7 @@ export async function runEmbeddedPiAgent(
         agentId: params.agentId,
         sessionKey: params.sessionKey,
         agentHarnessId: params.agentHarnessId,
+        agentHarnessRuntimeOverride: params.agentHarnessRuntimeOverride,
       });
       const pluginHarnessOwnsTransport = agentHarness.id !== "pi";
       const dynamicModelResolution = await resolveModelAsync(
@@ -1169,6 +1172,7 @@ export async function runEmbeddedPiAgent(
               durationMs: Date.now() - started,
               agentMeta: buildErrorAgentMeta({
                 sessionId: activeSessionId,
+                sessionFile: activeSessionFile,
                 provider,
                 model: model.id,
                 contextTokens: ctxInfo.tokens,
@@ -1292,6 +1296,7 @@ export async function runEmbeddedPiAgent(
             skillsSnapshot: params.skillsSnapshot,
             prompt,
             transcriptPrompt: params.transcriptPrompt,
+            currentTurnKind: params.currentTurnKind,
             currentTurnContext: params.currentTurnContext,
             images: params.images,
             imageOrder: params.imageOrder,
@@ -1373,6 +1378,8 @@ export async function runEmbeddedPiAgent(
             bootstrapPromptWarningSignature:
               bootstrapPromptWarningSignaturesSeen[bootstrapPromptWarningSignaturesSeen.length - 1],
             suppressNextUserMessagePersistence,
+            suppressTranscriptOnlyAssistantPersistence:
+              params.suppressTranscriptOnlyAssistantPersistence,
             onUserMessagePersisted,
           })
             .catch((err: unknown): never => {
@@ -1465,6 +1472,7 @@ export async function runEmbeddedPiAgent(
               durationMs: Date.now() - started,
               agentMeta: buildErrorAgentMeta({
                 sessionId: activeSessionId,
+                sessionFile: activeSessionFile,
                 provider,
                 model: model.id,
                 contextTokens: ctxInfo.tokens,
@@ -1967,6 +1975,7 @@ export async function runEmbeddedPiAgent(
                 durationMs: Date.now() - started,
                 agentMeta: buildErrorAgentMeta({
                   sessionId: sessionIdUsed,
+                  sessionFile: activeSessionFile,
                   provider,
                   model: model.id,
                   contextTokens: ctxInfo.tokens,
@@ -1997,6 +2006,7 @@ export async function runEmbeddedPiAgent(
                 durationMs: Date.now() - started,
                 agentMeta: buildErrorAgentMeta({
                   sessionId: sessionIdUsed,
+                  sessionFile: activeSessionFile,
                   provider,
                   model: model.id,
                   contextTokens: ctxInfo.tokens,
@@ -2068,6 +2078,7 @@ export async function runEmbeddedPiAgent(
                   durationMs: Date.now() - started,
                   agentMeta: buildErrorAgentMeta({
                     sessionId: sessionIdUsed,
+                    sessionFile: activeSessionFile,
                     provider,
                     model: model.id,
                     contextTokens: ctxInfo.tokens,
@@ -2108,6 +2119,7 @@ export async function runEmbeddedPiAgent(
                   durationMs: Date.now() - started,
                   agentMeta: buildErrorAgentMeta({
                     sessionId: sessionIdUsed,
+                    sessionFile: activeSessionFile,
                     provider,
                     model: model.id,
                     contextTokens: ctxInfo.tokens,
@@ -2504,6 +2516,7 @@ export async function runEmbeddedPiAgent(
             payloads,
             toolMediaUrls: attempt.toolMediaUrls,
             toolAudioAsVoice: attempt.toolAudioAsVoice,
+            toolTrustedLocalMedia: attempt.toolTrustedLocalMedia,
           });
           const timedOutDuringPrompt =
             timedOut && !timedOutDuringCompaction && !timedOutDuringToolExecution;
@@ -2531,7 +2544,8 @@ export async function runEmbeddedPiAgent(
           if (timedOutDuringPrompt && !hasMessagingToolDeliveryEvidence(attempt)) {
             const timeoutText = idleTimedOut
               ? "The model did not produce a response before the model idle timeout. " +
-                "Please try again, or increase `models.providers.<id>.timeoutSeconds` for slow local or self-hosted providers."
+                "Please try again, or increase `models.providers.<id>.timeoutSeconds` for slow local or self-hosted providers. " +
+                "If `agents.defaults.timeoutSeconds` or a run-specific timeout is lower, raise that ceiling too; provider timeouts cannot extend the whole agent run."
               : "Request timed out before a response was generated. " +
                 "Please try again, or increase `agents.defaults.timeoutSeconds` in your config.";
             const replayInvalid = resolveReplayInvalidForAttempt(null);

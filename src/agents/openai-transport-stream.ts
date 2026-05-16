@@ -30,6 +30,7 @@ import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.typ
 import { resolveProviderTransportTurnStateWithPlugin } from "../plugins/provider-runtime.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./copilot-dynamic-headers.js";
 import { createDeepSeekTextFilter } from "./deepseek-text-filter.js";
+import { resolveMaxTokensParam } from "./model-max-tokens-params.js";
 import {
   emitModelTransportDebug,
   resolveModelPayloadDebugMode,
@@ -72,6 +73,8 @@ const DEFAULT_AZURE_OPENAI_API_VERSION = "preview";
 const OPENAI_CODEX_RESPONSES_EMPTY_INPUT_TEXT = " ";
 const GEMINI_THOUGHT_SIGNATURE_VALIDATOR_SKIP = "skip_thought_signature_validator";
 const AZURE_RESPONSES_FIRST_EVENT_TIMEOUT_MS = 30_000;
+const MODEL_STREAM_COOPERATIVE_YIELD_INTERVAL_MS = 12;
+const MODEL_STREAM_COOPERATIVE_YIELD_MAX_EVENTS = 64;
 const log = createSubsystemLogger("openai-transport");
 
 type ReplayableResponseOutputMessage = Omit<ResponseOutputMessage, "id"> & { id?: string };
@@ -90,6 +93,42 @@ type BaseStreamOptions = {
   openclawCodeModeToolSurface?: boolean;
   responseFormat?: Record<string, unknown>;
 };
+
+type ModelStreamCooperativeScheduler = {
+  afterEvent: () => Promise<void>;
+};
+
+function throwIfModelStreamAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new Error("Request was aborted");
+  }
+}
+
+function createModelStreamCooperativeScheduler(
+  signal?: AbortSignal,
+): ModelStreamCooperativeScheduler {
+  let lastYieldedAt = Date.now();
+  let eventsSinceYield = 0;
+  return {
+    async afterEvent() {
+      throwIfModelStreamAborted(signal);
+      eventsSinceYield += 1;
+      const now = Date.now();
+      if (
+        eventsSinceYield < MODEL_STREAM_COOPERATIVE_YIELD_MAX_EVENTS &&
+        now - lastYieldedAt < MODEL_STREAM_COOPERATIVE_YIELD_INTERVAL_MS
+      ) {
+        return;
+      }
+      eventsSinceYield = 0;
+      lastYieldedAt = now;
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      throwIfModelStreamAborted(signal);
+    },
+  };
+}
 
 type OpenAIResponsesOptions = BaseStreamOptions & {
   reasoning?: OpenAIReasoningEffort;
@@ -721,6 +760,7 @@ async function processResponsesStream(
       serviceTier?: ResponseCreateParamsStreaming["service_tier"],
     ) => void;
     firstEventTimeoutMs?: number;
+    signal?: AbortSignal;
   },
 ) {
   let currentItem: Record<string, unknown> | null = null;
@@ -735,7 +775,9 @@ async function processResponsesStream(
     model,
     options?.firstEventTimeoutMs,
   );
+  const cooperativeScheduler = createModelStreamCooperativeScheduler(options?.signal);
   for await (const rawEvent of guardedStream) {
+    throwIfModelStreamAborted(options?.signal);
     const event = rawEvent as Record<string, unknown>;
     const type = stringifyUnknown(event.type);
     eventCount += 1;
@@ -887,12 +929,15 @@ async function processResponsesStream(
         | undefined;
       if (usage) {
         const cachedTokens = usage.input_tokens_details?.cached_tokens || 0;
+        const inputTokens = usage.input_tokens || 0;
+        const outputTokens = usage.output_tokens || 0;
+        const input = Math.max(0, inputTokens - cachedTokens);
         output.usage = {
-          input: (usage.input_tokens || 0) - cachedTokens,
-          output: usage.output_tokens || 0,
+          input,
+          output: outputTokens,
           cacheRead: cachedTokens,
           cacheWrite: 0,
-          totalTokens: usage.total_tokens || 0,
+          totalTokens: input + outputTokens + cachedTokens,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
         };
       }
@@ -929,6 +974,7 @@ async function processResponsesStream(
           : "Unknown error (no error details in response)";
       throw new Error(msg);
     }
+    await cooperativeScheduler.afterEvent();
   }
   const eventTypeSummary = [...eventTypes.entries()]
     .slice(0, 12)
@@ -1137,6 +1183,7 @@ export function createOpenAIResponsesTransportStreamFn(): StreamFn {
         await processResponsesStream(responseStream, output, stream, model, {
           serviceTier: (options as OpenAIResponsesOptions | undefined)?.serviceTier,
           applyServiceTierPricing,
+          signal: options?.signal,
         });
         if (options?.signal?.aborted) {
           throw new Error("Request was aborted");
@@ -1534,6 +1581,7 @@ export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
         stream.push({ type: "start", partial: output as never });
         await processResponsesStream(responseStream, output, stream, model, {
           firstEventTimeoutMs: AZURE_RESPONSES_FIRST_EVENT_TIMEOUT_MS,
+          signal: options?.signal,
         });
         if (options?.signal?.aborted) {
           throw new Error("Request was aborted");
@@ -1734,7 +1782,9 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
           buildOpenAISdkRequestOptions(model, options?.signal),
         )) as unknown as AsyncIterable<ChatCompletionChunk>;
         stream.push({ type: "start", partial: output as never });
-        await processOpenAICompletionsStream(responseStream, output, model, stream);
+        await processOpenAICompletionsStream(responseStream, output, model, stream, {
+          signal: options?.signal,
+        });
         if (options?.signal?.aborted) {
           throw new Error("Request was aborted");
         }
@@ -1756,6 +1806,7 @@ async function processOpenAICompletionsStream(
   output: MutableAssistantOutput,
   model: Model<Api>,
   stream: { push(event: unknown): void },
+  options?: { signal?: AbortSignal },
 ) {
   const MAX_POST_TOOL_CALL_BUFFER_BYTES = 256_000;
   const MAX_TOOL_CALL_ARGUMENT_BUFFER_BYTES = 256_000;
@@ -1903,8 +1954,11 @@ async function processOpenAICompletionsStream(
       appendVisibleTextDelta(part);
     }
   };
+  const cooperativeScheduler = createModelStreamCooperativeScheduler(options?.signal);
   for await (const rawChunk of responseStream as AsyncIterable<unknown>) {
+    throwIfModelStreamAborted(options?.signal);
     if (!rawChunk || typeof rawChunk !== "object") {
+      await cooperativeScheduler.afterEvent();
       continue;
     }
     const chunk = rawChunk as ChatCompletionChunk;
@@ -1914,6 +1968,7 @@ async function processOpenAICompletionsStream(
     }
     const choice = Array.isArray(chunk.choices) ? chunk.choices[0] : undefined;
     if (!choice) {
+      await cooperativeScheduler.afterEvent();
       continue;
     }
     const choiceUsage = (choice as unknown as { usage?: ChatCompletionChunk["usage"] }).usage;
@@ -1931,6 +1986,7 @@ async function processOpenAICompletionsStream(
       choice.delta ??
       (choice as unknown as { message?: ChatCompletionChunk["choices"][number]["delta"] }).message;
     if (!choiceDelta) {
+      await cooperativeScheduler.afterEvent();
       continue;
     }
     if (choiceDelta.content) {
@@ -2022,6 +2078,7 @@ async function processOpenAICompletionsStream(
       }
     }
     flushPendingPostToolCallDeltas();
+    await cooperativeScheduler.afterEvent();
   }
   flushDeepSeekTextFilterAtEnd();
   finishCurrentBlock();
@@ -2252,6 +2309,16 @@ function resolveOpenAICompletionsReasoningEffort(options: OpenAICompletionsOptio
   return options?.reasoningEffort ?? options?.reasoning ?? "high";
 }
 
+function resolveOpenAICompletionsMaxTokens(
+  model: OpenAIModeModel,
+  options: OpenAICompletionsOptions | undefined,
+): number | undefined {
+  const paramsMaxTokens = resolveMaxTokensParam(
+    (model as { params?: Record<string, unknown> }).params,
+  );
+  return (options?.maxTokens || undefined) ?? (paramsMaxTokens || undefined) ?? model.maxTokens;
+}
+
 function isQwenOpenAICompletionsThinkingFormat(format: string): boolean {
   return format === "qwen" || format === "qwen-chat-template";
 }
@@ -2448,10 +2515,14 @@ function sanitizeOpenRouterReasoningReplayFields(record: Record<string, unknown>
     delete record.reasoning_details;
   }
 
-  if ("reasoning" in record && typeof record.reasoning !== "string") {
+  // Empty reasoning artifacts are rejected by OpenRouter/DeepSeek replay.
+  if ("reasoning" in record && (typeof record.reasoning !== "string" || record.reasoning === "")) {
     delete record.reasoning;
   }
-  if ("reasoning_content" in record && typeof record.reasoning_content !== "string") {
+  if (
+    "reasoning_content" in record &&
+    (typeof record.reasoning_content !== "string" || record.reasoning_content === "")
+  ) {
     delete record.reasoning_content;
   }
 
@@ -2481,34 +2552,49 @@ function sanitizeReasoningContentReplayFields(record: Record<string, unknown>): 
 const REASONING_CONTENT_REPLAY_MODEL_IDS = new Set([
   "deepseek-v4-flash",
   "deepseek-v4-pro",
+  "kimi-for-coding",
+  "kimi-k2.5",
+  "kimi-k2.6",
+  "kimi-k2-thinking",
+  "kimi-k2-thinking-turbo",
   "mimo-v2-pro",
   "mimo-v2-omni",
   "mimo-v2.5",
   "mimo-v2.5-pro",
+  "mimo-v2.6-pro",
 ]);
 
-function normalizeReasoningContentReplayModelId(modelId: unknown): string | undefined {
+function getReasoningContentReplayModelIdCandidates(modelId: unknown): string[] {
   if (typeof modelId !== "string") {
-    return undefined;
+    return [];
   }
-  const normalized = modelId.trim().toLowerCase().split(":", 1)[0];
+  const normalized = modelId.trim().toLowerCase();
   if (!normalized) {
-    return undefined;
+    return [];
   }
   const parts = normalized.split("/").filter(Boolean);
-  return parts[parts.length - 1] ?? normalized;
+  const finalPart = parts[parts.length - 1] ?? normalized;
+  const candidates = [finalPart];
+  const colonParts = finalPart.split(":").filter(Boolean);
+  if (colonParts.length > 1) {
+    candidates.push(colonParts[0] ?? "", colonParts[colonParts.length - 1] ?? "");
+  }
+  return [...new Set(candidates.filter(Boolean))];
 }
 
 function shouldPreserveReasoningContentReplay(
   model: OpenAIModeModel,
-  compat: { requiresReasoningContentOnAssistantMessages: boolean },
+  compat: { requiresReasoningContentOnAssistantMessages: boolean; thinkingFormat: string },
 ): boolean {
-  if (compat.requiresReasoningContentOnAssistantMessages) {
+  if (
+    compat.requiresReasoningContentOnAssistantMessages ||
+    compat.thinkingFormat === "deepseek" ||
+    compat.thinkingFormat === "zai"
+  ) {
     return true;
   }
-  const normalizedModelId = normalizeReasoningContentReplayModelId(model.id);
-  return (
-    normalizedModelId !== undefined && REASONING_CONTENT_REPLAY_MODEL_IDS.has(normalizedModelId)
+  return getReasoningContentReplayModelIdCandidates(model.id).some((modelId) =>
+    REASONING_CONTENT_REPLAY_MODEL_IDS.has(modelId),
   );
 }
 
@@ -2570,8 +2656,10 @@ export function buildOpenAICompletionsParams(
       ? flattenCompletionMessagesToStringContent(messages)
       : messages,
     stream: true,
-    stream_options: { include_usage: true },
   };
+  if (compat.supportsUsageInStreaming) {
+    params.stream_options = { include_usage: true };
+  }
   if (compat.supportsStore) {
     params.store = false;
   }
@@ -2579,7 +2667,7 @@ export function buildOpenAICompletionsParams(
     params.prompt_cache_key = options.sessionId;
   }
   {
-    const effectiveMaxTokens = options?.maxTokens || model.maxTokens;
+    const effectiveMaxTokens = resolveOpenAICompletionsMaxTokens(model, options);
     if (effectiveMaxTokens) {
       if (compat.maxTokensField === "max_tokens") {
         params.max_tokens = effectiveMaxTokens;

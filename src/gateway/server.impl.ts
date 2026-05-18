@@ -70,6 +70,7 @@ import {
   isCoreGatewayMethodClassified,
   type GatewayMethodRegistry,
 } from "./methods/registry.js";
+import { isLoopbackHost } from "./net.js";
 import {
   listChannelPluginConfigTargetIds,
   pluginConfigTargetsChanged,
@@ -111,9 +112,8 @@ import { loadGatewayTlsRuntime } from "./server/tls.js";
 import { resolveSharedGatewaySessionGeneration } from "./server/ws-shared-generation.js";
 import { maybeSeedControlUiAllowedOriginsAtStartup } from "./startup-control-ui-origins.js";
 
-export async function __resetModelCatalogCacheForTest(): Promise<void> {
-  const { __resetModelCatalogCacheForTest: resetModelCatalogCacheForTest } =
-    await import("./server-model-catalog.js");
+export async function resetModelCatalogCacheForTest(): Promise<void> {
+  const { resetModelCatalogCacheForTest } = await import("./server-model-catalog.js");
   await resetModelCatalogCacheForTest();
 }
 
@@ -1041,6 +1041,7 @@ export async function startGatewayServer(
           cfgAtStart,
           port,
           gatewayTls,
+          gatewayDirectReachable: !isLoopbackHost(bindHost),
           tailscaleMode,
           log,
           logDiscovery,
@@ -1199,6 +1200,7 @@ export async function startGatewayServer(
           cfgAtStart,
           port,
           gatewayTls,
+          gatewayDirectReachable: !isLoopbackHost(bindHost),
           tailscaleMode,
           logDiscovery,
           pluginRegistry: nextPluginRegistry,

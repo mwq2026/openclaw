@@ -852,6 +852,31 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         unit: "1",
         description: "Messages queued for processing",
       });
+      const messageReceivedCounter = meter.createCounter("openclaw.message.received", {
+        unit: "1",
+        description: "Inbound messages received",
+      });
+      const messageDispatchStartedCounter = meter.createCounter(
+        "openclaw.message.dispatch.started",
+        {
+          unit: "1",
+          description: "Inbound message dispatch attempts started",
+        },
+      );
+      const messageDispatchCompletedCounter = meter.createCounter(
+        "openclaw.message.dispatch.completed",
+        {
+          unit: "1",
+          description: "Inbound message dispatch attempts completed",
+        },
+      );
+      const messageDispatchDurationHistogram = meter.createHistogram(
+        "openclaw.message.dispatch.duration_ms",
+        {
+          unit: "ms",
+          description: "Inbound message dispatch duration",
+        },
+      );
       const messageProcessedCounter = meter.createCounter("openclaw.message.processed", {
         unit: "1",
         description: "Messages processed by outcome",
@@ -893,6 +918,10 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
       const sessionStateCounter = meter.createCounter("openclaw.session.state", {
         unit: "1",
         description: "Session state transitions",
+      });
+      const sessionTurnCreatedCounter = meter.createCounter("openclaw.session.turn.created", {
+        unit: "1",
+        description: "Agent session turns created",
       });
       const sessionStuckCounter = meter.createCounter("openclaw.session.stuck", {
         unit: "1",
@@ -1006,6 +1035,13 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         unit: "1",
         description: "Diagnostic memory pressure events",
       });
+      const asyncQueueDroppedCounter = meter.createCounter(
+        "openclaw.diagnostic.async_queue.dropped",
+        {
+          unit: "1",
+          description: "Async diagnostic queue drops by dropped event class",
+        },
+      );
       const livenessWarningCounter = meter.createCounter("openclaw.liveness.warning", {
         unit: "1",
         description: "Diagnostic liveness warning events",
@@ -1430,6 +1466,37 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
       };
 
+      const recordMessageReceived = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.received" }>,
+      ) => {
+        messageReceivedCounter.add(1, {
+          "openclaw.channel": lowCardinalityAttr(evt.channel),
+          "openclaw.source": lowCardinalityAttr(evt.source),
+        });
+      };
+
+      const recordMessageDispatchStarted = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.dispatch.started" }>,
+      ) => {
+        messageDispatchStartedCounter.add(1, {
+          "openclaw.channel": lowCardinalityAttr(evt.channel),
+          "openclaw.source": lowCardinalityAttr(evt.source),
+        });
+      };
+
+      const recordMessageDispatchCompleted = (
+        evt: Extract<DiagnosticEventPayload, { type: "message.dispatch.completed" }>,
+      ) => {
+        const attrs = {
+          "openclaw.channel": lowCardinalityAttr(evt.channel),
+          "openclaw.outcome": evt.outcome,
+          "openclaw.reason": lowCardinalityAttr(evt.reason, "none"),
+          "openclaw.source": lowCardinalityAttr(evt.source),
+        };
+        messageDispatchCompletedCounter.add(1, attrs);
+        messageDispatchDurationHistogram.record(evt.durationMs, attrs);
+      };
+
       const recordMessageProcessed = (
         evt: Extract<DiagnosticEventPayload, { type: "message.processed" }>,
       ) => {
@@ -1563,6 +1630,16 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           attrs["openclaw.reason"] = redactSensitiveText(evt.reason);
         }
         sessionStateCounter.add(1, attrs);
+      };
+
+      const recordSessionTurnCreated = (
+        evt: Extract<DiagnosticEventPayload, { type: "session.turn.created" }>,
+      ) => {
+        sessionTurnCreatedCounter.add(1, {
+          "openclaw.agent": lowCardinalityAttr(evt.agentId, "unknown"),
+          "openclaw.channel": lowCardinalityAttr(evt.channel, "unknown"),
+          "openclaw.trigger": evt.trigger,
+        });
       };
 
       const recordSessionStuck = (
@@ -1729,6 +1806,29 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
           });
         }
         span.end(evt.ts);
+      };
+
+      const recordAsyncQueueDropped = (
+        evt: Extract<DiagnosticEventPayload, { type: "diagnostic.async_queue.dropped" }>,
+      ) => {
+        asyncQueueDroppedCounter.add(evt.droppedEvents, {
+          "openclaw.diagnostic.async_queue.drop_class": "total",
+        });
+        if (evt.droppedTrustedEvents !== undefined) {
+          asyncQueueDroppedCounter.add(evt.droppedTrustedEvents, {
+            "openclaw.diagnostic.async_queue.drop_class": "trusted",
+          });
+        }
+        if (evt.droppedUntrustedEvents !== undefined) {
+          asyncQueueDroppedCounter.add(evt.droppedUntrustedEvents, {
+            "openclaw.diagnostic.async_queue.drop_class": "untrusted",
+          });
+        }
+        if (evt.droppedPriorityEvents !== undefined) {
+          asyncQueueDroppedCounter.add(evt.droppedPriorityEvents, {
+            "openclaw.diagnostic.async_queue.drop_class": "priority",
+          });
+        }
       };
 
       const recordRunCompleted = (
@@ -2428,6 +2528,15 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
             case "message.queued":
               recordMessageQueued(evt);
               return;
+            case "message.received":
+              recordMessageReceived(evt);
+              return;
+            case "message.dispatch.started":
+              recordMessageDispatchStarted(evt);
+              return;
+            case "message.dispatch.completed":
+              recordMessageDispatchCompleted(evt);
+              return;
             case "message.processed":
               recordMessageProcessed(evt);
               return;
@@ -2454,6 +2563,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
               return;
             case "session.long_running":
             case "session.stalled":
+              return;
+            case "session.turn.created":
+              recordSessionTurnCreated(evt);
               return;
             case "session.stuck":
               recordSessionStuck(evt);
@@ -2531,6 +2643,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
               return;
             case "diagnostic.memory.pressure":
               recordMemoryPressure(evt);
+              return;
+            case "diagnostic.async_queue.dropped":
+              recordAsyncQueueDropped(evt);
               return;
             case "telemetry.exporter":
               recordTelemetryExporter(evt, metadata);

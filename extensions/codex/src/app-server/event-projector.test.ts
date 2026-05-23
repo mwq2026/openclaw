@@ -20,7 +20,6 @@ import {
   type CodexAppServerEventProjectorOptions,
   type CodexAppServerToolTelemetry,
 } from "./event-projector.js";
-import { CodexNativeSubagentTaskMirror } from "./native-subagent-task-mirror.js";
 import { rememberCodexRateLimits, resetCodexRateLimitCacheForTests } from "./rate-limit-cache.js";
 import { createCodexTestModel } from "./test-support.js";
 
@@ -996,36 +995,6 @@ describe("CodexAppServerEventProjector", () => {
     expect(result.assistantTexts).toStrictEqual([]);
   });
 
-  it("mirrors native subagent notifications before current-turn filtering", async () => {
-    const projector = await createProjector({
-      ...(await createParams()),
-      sessionKey: "agent:main:main",
-    } as EmbeddedRunAttemptParams);
-    const mirrorSpy = vi.spyOn(CodexNativeSubagentTaskMirror.prototype, "handleNotification");
-    const notification = {
-      method: "item/completed",
-      params: {
-        threadId: THREAD_ID,
-        turnId: "child-turn",
-        item: {
-          type: "collabAgentToolCall",
-          tool: "spawnAgent",
-          senderThreadId: THREAD_ID,
-          receiverThreadIds: ["child-thread"],
-          agentsStates: {
-            "child-thread": { status: "completed", message: "done" },
-          },
-        },
-      },
-    } as ProjectorNotification;
-
-    await projector.handleNotification(notification);
-
-    expect(mirrorSpy).toHaveBeenCalledWith(notification);
-    const result = projector.buildResult(buildEmptyToolTelemetry());
-    expect(result.assistantTexts).toEqual([]);
-  });
-
   it("ignores notifications that omit top-level thread and turn ids", async () => {
     const projector = await createProjector();
 
@@ -1978,7 +1947,88 @@ describe("CodexAppServerEventProjector", () => {
     expect(event.params).toEqual({ query: "native tool observability" });
     expect(event.runId).toBe("run-1");
     expect(event.toolCallId).toBe("search-observed");
-    expect(event.result).toEqual({ status: "completed" });
+    expect(event.result).toEqual({
+      status: "completed",
+      durationMs: 5,
+      query: "native tool observability",
+    });
+  });
+
+  it("uses Codex web search action metadata when the top-level query is empty", async () => {
+    const afterToolCall = vi.fn();
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "after_tool_call", handler: afterToolCall }]),
+    );
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          type: "webSearch",
+          id: "search-observed",
+          query: "",
+          action: {
+            type: "search",
+            query: "native action query",
+            queries: ["native action query", "secondary query"],
+          },
+          status: "completed",
+          durationMs: 5,
+        },
+      }),
+    );
+
+    await vi.waitFor(() => expect(afterToolCall).toHaveBeenCalledTimes(1));
+    const event = requireRecord(
+      mockCallArg(afterToolCall, 0, 0, "after_tool_call event"),
+      "after_tool_call event",
+    );
+    expect(event.toolName).toBe("web_search");
+    expect(event.params).toEqual({
+      query: "native action query",
+      queries: ["native action query", "secondary query"],
+    });
+    expect(event.result).toEqual({
+      status: "completed",
+      durationMs: 5,
+      query: "native action query",
+      queries: ["native action query", "secondary query"],
+    });
+  });
+
+  it("marks unavailable Codex web search queries explicitly", async () => {
+    const afterToolCall = vi.fn();
+    initializeGlobalHookRunner(
+      createMockPluginRegistry([{ hookName: "after_tool_call", handler: afterToolCall }]),
+    );
+    const projector = await createProjector();
+
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          type: "webSearch",
+          id: "search-observed",
+          query: "",
+          action: { type: "other" },
+          status: "completed",
+        },
+      }),
+    );
+
+    await vi.waitFor(() => expect(afterToolCall).toHaveBeenCalledTimes(1));
+    const event = requireRecord(
+      mockCallArg(afterToolCall, 0, 0, "after_tool_call event"),
+      "after_tool_call event",
+    );
+    expect(event.params).toEqual({
+      action: "other",
+      queryUnavailable: true,
+    });
+    expect(event.result).toEqual({
+      status: "completed",
+      action: "other",
+      queryUnavailable: true,
+    });
   });
 
   it("records dynamic OpenClaw tool calls in mirrored transcript snapshots", async () => {

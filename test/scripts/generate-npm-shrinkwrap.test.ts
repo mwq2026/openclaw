@@ -1,10 +1,15 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   collectOverrideViolations,
+  collectPnpmLockViolations,
   disableShrinkwrappedOverrideConflictSources,
   exactOverrideRulesFromOverrides,
   exactVersionFromOverrideSpec,
+  normalizeNpmVersionDrift,
+  parsePnpmPackageKey,
   parseLockPackagePath,
+  shrinkwrapPackageDirsForChangedPaths,
 } from "../../scripts/generate-npm-shrinkwrap.mjs";
 
 describe("generate-npm-shrinkwrap", () => {
@@ -29,6 +34,18 @@ describe("generate-npm-shrinkwrap", () => {
         path: "node_modules/@earendil-works/pi-coding-agent/node_modules/@anthropic-ai/sdk",
       },
     ]);
+  });
+
+  it("parses pnpm lock package keys", () => {
+    expect(parsePnpmPackageKey("@aws-sdk/core@3.974.12")).toEqual({
+      name: "@aws-sdk/core",
+      version: "3.974.12",
+    });
+    expect(parsePnpmPackageKey("react-dom@19.2.4(react@19.2.4)")).toEqual({
+      name: "react-dom",
+      version: "19.2.4",
+    });
+    expect(parsePnpmPackageKey("invalid")).toBeNull();
   });
 
   it("disables embedded shrinkwraps that hide workspace overrides", () => {
@@ -66,5 +83,96 @@ describe("generate-npm-shrinkwrap", () => {
     expect(
       lockfile.packages["node_modules/@earendil-works/pi-coding-agent/node_modules/protobufjs"],
     ).toBeUndefined();
+  });
+
+  it("detects shrinkwrap packages that bypass the pnpm lock", () => {
+    const lockfile = {
+      packages: {
+        "": {},
+        "node_modules/react": {
+          version: "19.2.6",
+        },
+        "node_modules/@nolyfill/domexception": {
+          version: "1.0.28",
+        },
+      },
+    };
+    const pnpmPackages = new Set(["react@19.2.4", "@nolyfill/domexception@1.0.28"]);
+
+    expect(collectPnpmLockViolations(lockfile, pnpmPackages)).toEqual([
+      {
+        packageKey: "react@19.2.6",
+        path: "node_modules/react",
+      },
+    ]);
+  });
+
+  it("normalizes npm patch-version metadata drift", () => {
+    expect(
+      normalizeNpmVersionDrift({
+        packages: {
+          "node_modules/@rollup/rollup-linux-x64-gnu": {
+            version: "4.53.5",
+            cpu: ["x64"],
+            libc: ["glibc"],
+            optional: true,
+            os: ["linux"],
+          },
+          "node_modules/zod": {
+            version: "4.4.3",
+            peer: true,
+          },
+          "node_modules/keeps-peer-false": {
+            version: "1.0.0",
+            peer: false,
+          },
+        },
+      }),
+    ).toEqual({
+      packages: {
+        "node_modules/@rollup/rollup-linux-x64-gnu": {
+          version: "4.53.5",
+          cpu: ["x64"],
+          optional: true,
+          os: ["linux"],
+        },
+        "node_modules/zod": {
+          version: "4.4.3",
+        },
+        "node_modules/keeps-peer-false": {
+          version: "1.0.0",
+          peer: false,
+        },
+      },
+    });
+  });
+
+  it("targets changed publishable plugin shrinkwraps", () => {
+    expect(
+      shrinkwrapPackageDirsForChangedPaths([
+        "extensions/acpx/package.json",
+        "extensions/acpx/npm-shrinkwrap.json",
+      ]).map((packageDir) => path.relative(process.cwd(), packageDir)),
+    ).toEqual(["extensions/acpx"]);
+  });
+
+  it("falls back to every shrinkwrap when lockfile ownership is ambiguous", () => {
+    const packageDirs = shrinkwrapPackageDirsForChangedPaths(["pnpm-lock.yaml"]).map((packageDir) =>
+      path.relative(process.cwd(), packageDir),
+    );
+
+    expect(packageDirs).toContain("");
+    expect(packageDirs).toContain("extensions/acpx");
+  });
+
+  it("falls back to every shrinkwrap when mixed lockfile changes do not map to packages", () => {
+    const packageDirs = shrinkwrapPackageDirsForChangedPaths([
+      "extensions/acpx/package.json",
+      "pnpm-lock.yaml",
+    ]).map((packageDir) => path.relative(process.cwd(), packageDir));
+
+    expect(packageDirs).toContain("");
+    expect(packageDirs).toContain("extensions/acpx");
+    expect(packageDirs.length).toBeGreaterThan(1);
   });
 });

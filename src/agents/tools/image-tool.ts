@@ -586,11 +586,11 @@ async function runImagePrompt(params: {
         cfg: providerCfg,
         provider,
         model: modelId,
-        providerRegistry: providerRegistry as Map<string, MediaUnderstandingProvider>,
+        providerRegistry,
       });
       const imageProvider = imageToolProviderDeps.getMediaUnderstandingProvider(
         provider,
-        providerRegistry as Map<string, MediaUnderstandingProvider>,
+        providerRegistry,
       );
       if (
         params.images.length > 1 &&
@@ -854,7 +854,7 @@ export function createImageTool(options?: {
         // shared image registry here, so fail gracefully instead of attempting to
         // `fs.readFile("image:0")` and producing a noisy ENOENT.
         const refInfo = classifyMediaReferenceSource(normalizedRef);
-        const { isDataUrl, isFileUrl, isHttpUrl } = refInfo;
+        const { isDataUrl, isFileUrl, isHttpUrl, isMediaStoreUrl } = refInfo;
         if (refInfo.hasUnsupportedScheme) {
           return {
             content: [
@@ -888,6 +888,7 @@ export function createImageTool(options?: {
             !isDataUrl &&
             !isFileUrl &&
             !isHttpUrl &&
+            !isMediaStoreUrl &&
             !refInfo.looksLikeWindowsDrivePath &&
             !isAbsolute(normalizedRef) &&
             options?.workspaceDir

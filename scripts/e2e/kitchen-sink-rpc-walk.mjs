@@ -55,8 +55,12 @@ const ERROR_LOG_ALLOW_PATTERNS = [
 
 let callGatewayModulePromise;
 
-function readPositiveInt(raw, fallback) {
-  const parsed = Number.parseInt(String(raw || ""), 10);
+export function readPositiveInt(raw, fallback) {
+  const text = String(raw || "").trim();
+  if (!/^\d+$/u.test(text)) {
+    return fallback;
+  }
+  const parsed = Number(text);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
@@ -577,14 +581,14 @@ async function startGateway(runner, port, env, logPath) {
 }
 
 export async function stopGateway(child, options = {}) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) {
+  if (!child || hasChildExited(child)) {
     return;
   }
   const teardownGraceMs = Math.max(0, options.teardownGraceMs ?? GATEWAY_TEARDOWN_GRACE_MS);
   const killGraceMs = Math.max(0, options.killGraceMs ?? GATEWAY_TEARDOWN_KILL_GRACE_MS);
   const exited = new Promise((resolve) => child.once("exit", resolve));
   const waitForExit = async (ms) =>
-    child.exitCode !== null || child.signalCode !== null
+    hasChildExited(child)
       ? true
       : await Promise.race([exited.then(() => true), delay(ms).then(() => false)]);
 
@@ -597,6 +601,10 @@ export async function stopGateway(child, options = {}) {
     return;
   }
   releaseUnsettledGatewayChild(child);
+}
+
+export function hasChildExited(child) {
+  return child.exitCode !== null || child.signalCode !== null;
 }
 
 function releaseUnsettledGatewayChild(child) {
@@ -645,7 +653,7 @@ export function createGatewayReadyLogScanner(logPath, marker = "[gateway] ready"
 
     const fd = fs.openSync(logPath, "r");
     try {
-      const buffer = Buffer.allocUnsafe(Math.min(LOG_SCAN_CHUNK_BYTES, stat.size - offset));
+      const buffer = Buffer.alloc(Math.min(LOG_SCAN_CHUNK_BYTES, stat.size - offset));
       while (offset < stat.size) {
         const bytesToRead = Math.min(buffer.length, stat.size - offset);
         const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, offset);
@@ -667,16 +675,20 @@ export function createGatewayReadyLogScanner(logPath, marker = "[gateway] ready"
   };
 }
 
-async function waitForGatewayReady(child, port, logPath) {
+export async function waitForGatewayReady(child, port, logPath, options = {}) {
   const started = Date.now();
   let lastError = "";
+  const timeoutMs = Math.max(1, options.timeoutMs ?? READY_TIMEOUT_MS);
+  const pollDelayMs = Math.max(1, options.pollDelayMs ?? 250);
   const logReportedReady = createGatewayReadyLogScanner(logPath);
-  while (Date.now() - started < READY_TIMEOUT_MS) {
-    if (child.exitCode !== null) {
+  while (Date.now() - started < timeoutMs) {
+    if (hasChildExited(child)) {
       throw new Error(`gateway exited before ready\n${tailFile(logPath)}`);
     }
     try {
-      const readyz = await fetchJson(`http://127.0.0.1:${port}/readyz`);
+      const readyz = await fetchJson(`http://127.0.0.1:${port}/readyz`, {
+        fetchImpl: options.fetchImpl,
+      });
       if (readyz.ok) {
         return;
       }
@@ -687,7 +699,7 @@ async function waitForGatewayReady(child, port, logPath) {
     if (logReportedReady()) {
       lastError = `${lastError}; gateway log reported ready before HTTP readiness`;
     }
-    await delay(250);
+    await delay(pollDelayMs);
   }
   throw new Error(`gateway did not become ready: ${lastError}\n${tailFile(logPath)}`);
 }
@@ -1204,7 +1216,7 @@ export function findErrorLogFindings(logPath) {
 
   const fd = fs.openSync(logPath, "r");
   try {
-    const buffer = Buffer.allocUnsafe(LOG_SCAN_CHUNK_BYTES);
+    const buffer = Buffer.alloc(LOG_SCAN_CHUNK_BYTES);
     let offset = 0;
     while (offset < scanBytes) {
       const bytesToRead = Math.min(buffer.length, scanBytes - offset);
@@ -1250,9 +1262,9 @@ export function tailFile(file, maxBytes = LOG_TAIL_BYTES) {
   const length = stat.size - start;
   const fd = fs.openSync(file, "r");
   try {
-    const buffer = Buffer.allocUnsafe(length);
-    fs.readSync(fd, buffer, 0, length, start);
-    return tailText(buffer.toString("utf8"));
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(fd, buffer, 0, length, start);
+    return tailText(buffer.subarray(0, bytesRead).toString("utf8"));
   } finally {
     fs.closeSync(fd);
   }

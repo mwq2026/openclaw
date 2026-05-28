@@ -1,5 +1,12 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import fs, {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -14,7 +21,9 @@ import {
   fetchJson,
   findErrorLogFindings,
   findDistCallGatewayModuleFiles,
+  hasChildExited,
   makeEnv,
+  readPositiveInt,
   runCommand,
   sampleProcess,
   sampleWindowsProcessByPort,
@@ -22,15 +31,26 @@ import {
   summarizeProcessSamples,
   tailFile,
   usesBuiltOpenClawEntry,
+  waitForGatewayReady,
 } from "../../scripts/e2e/kitchen-sink-rpc-walk.mjs";
 
 const posixIt = process.platform === "win32" ? it.skip : it;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
 describe("kitchen-sink RPC isolated state", () => {
+  it("keeps loose numeric env values from corrupting runtime guardrails", () => {
+    expect(readPositiveInt(undefined, 60_000)).toBe(60_000);
+    expect(readPositiveInt("1000", 60_000)).toBe(1000);
+    expect(readPositiveInt(" 1000 ", 60_000)).toBe(1000);
+    expect(readPositiveInt("1e3", 60_000)).toBe(60_000);
+    expect(readPositiveInt("1000ms", 60_000)).toBe(60_000);
+    expect(readPositiveInt("0", 60_000)).toBe(60_000);
+  });
+
   it("cleans up the generated temporary home tree", async () => {
     const { root, env } = makeEnv();
 
@@ -49,6 +69,12 @@ describe("kitchen-sink RPC isolated state", () => {
 });
 
 describe("kitchen-sink RPC gateway teardown", () => {
+  it("treats signaled gateway children as exited", () => {
+    expect(hasChildExited({ exitCode: null, signalCode: "SIGTERM" })).toBe(true);
+    expect(hasChildExited({ exitCode: 0, signalCode: null })).toBe(true);
+    expect(hasChildExited({ exitCode: null, signalCode: null })).toBe(false);
+  });
+
   it("releases gateway handles when the process ignores teardown signals", async () => {
     const child = new EventEmitter() as EventEmitter & {
       exitCode: number | null;
@@ -75,6 +101,28 @@ describe("kitchen-sink RPC gateway teardown", () => {
     expect(child.stdout.destroy).toHaveBeenCalledOnce();
     expect(child.stderr.destroy).toHaveBeenCalledOnce();
     expect(child.unref).toHaveBeenCalledOnce();
+  });
+
+  it("fails readiness waits before polling after signaled gateway exits", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "openclaw-kitchen-rpc-signal-ready-"));
+    try {
+      const logPath = path.join(root, "gateway.log");
+      writeFileSync(logPath, "gateway died\n");
+      const fetchImpl = vi.fn(() => {
+        throw new Error("fetch should not run after process exit");
+      });
+
+      await expect(
+        waitForGatewayReady({ exitCode: null, signalCode: "SIGTERM" }, 9, logPath, {
+          fetchImpl,
+          pollDelayMs: 1,
+          timeoutMs: 1,
+        }),
+      ).rejects.toThrow("gateway exited before ready");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -128,6 +176,25 @@ describe("kitchen-sink RPC gateway readiness logs", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("honors short reads when a gateway log shrinks during tailing", () => {
+    vi.spyOn(fs, "existsSync").mockReturnValue(true);
+    vi.spyOn(fs, "statSync").mockReturnValue({
+      isFile: () => true,
+      size: 64,
+    } as fs.Stats);
+    vi.spyOn(fs, "openSync").mockReturnValue(123 as never);
+    vi.spyOn(fs, "closeSync").mockImplementation(() => undefined);
+    vi.spyOn(fs, "readSync").mockImplementation((_fd, buffer) => {
+      if (!Buffer.isBuffer(buffer)) {
+        throw new Error("expected buffer read");
+      }
+      buffer.write("recent ready");
+      return 12;
+    });
+
+    expect(tailFile("/tmp/truncated-kitchen-rpc.log", 64)).toBe("recent ready");
   });
 
   it("scans gateway error logs incrementally and keeps the latest findings", () => {
@@ -200,7 +267,7 @@ setInterval(() => {}, 1000);
     const runPromise = runCommand(process.execPath, [scriptPath, grandchildPidPath], {
       detached: undefined,
       timeoutKillGraceMs: 50,
-      timeoutMs: 2000,
+      timeoutMs: 1000,
     });
 
     try {
@@ -209,7 +276,7 @@ setInterval(() => {}, 1000);
       expect(Number.isInteger(grandchildPid)).toBe(true);
       expect(isProcessAlive(grandchildPid)).toBe(true);
 
-      await expect(runPromise).rejects.toThrow("timed out after 2000ms");
+      await expect(runPromise).rejects.toThrow("timed out after 1000ms");
       await waitFor(() => !isProcessAlive(grandchildPid), 5_000);
     } finally {
       await runPromise.catch(() => {});

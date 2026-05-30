@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
 import { loggingState } from "../logging/state.js";
 import type { RuntimeEnv } from "../runtime.js";
-import { __testing as agentViaGatewayTesting, agentCliCommand } from "./agent-via-gateway.js";
+import { agentCliCommand, agentViaGatewayTesting } from "./agent-via-gateway.js";
 import type { agentCommand as AgentCommand } from "./agent.js";
 
 const loadConfig = vi.hoisted(() => vi.fn());
@@ -206,7 +206,7 @@ function createGatewayNormalCloseError() {
   });
 }
 
-vi.mock("../config/config.js", () => ({ getRuntimeConfig: loadConfig, loadConfig }));
+vi.mock("../config/io.js", () => ({ getRuntimeConfig: loadConfig, loadConfig }));
 vi.mock("../gateway/call.js", () => ({
   callGateway,
   isGatewayTransportError,
@@ -284,6 +284,8 @@ describe("agentCliCommand", () => {
       expect(params.sessionKey).toBe("agent:main:incident-42");
       expect(params.sessionId).toBeUndefined();
       expect(params.to).toBeUndefined();
+      expect(request.config).toBe(loadConfig.mock.results[0]?.value);
+      expect(loadConfig).toHaveBeenCalledWith({ skipPluginValidation: true, pin: false });
       expect(agentCommand).not.toHaveBeenCalled();
       expect(loadAgentSessionModuleMock).not.toHaveBeenCalled();
     });
@@ -811,6 +813,7 @@ describe("agentCliCommand", () => {
       });
       expect(fallbackAbort?.method).toBe("chat.abort");
       expect(fallbackAbort?.timeoutMs).toBe(2_000);
+      expect(fallbackAbort?.config).toBe(loadConfig.mock.results[0]?.value);
       expect(fallbackAbort?.params).toEqual({
         sessionKey: "agent:main:main",
         runId: "pre-accepted-run",
@@ -960,6 +963,7 @@ describe("agentCliCommand", () => {
       expect(fallbackAbort?.clientName).toBe("gateway-client");
       expect(fallbackAbort?.mode).toBe("backend");
       expect(fallbackAbort?.scopes).toEqual(["operator.admin"]);
+      expect(fallbackAbort?.config).toBe(loadConfig.mock.results[0]?.value);
       expect(fallbackAbort?.params).toEqual({
         sessionKey: "agent:main:main",
         runId: "run-model-fallback",
@@ -1434,6 +1438,10 @@ describe("agentCliCommand", () => {
         };
         expect(fallbackOpts.sessionId).toMatch(/^gateway-fallback-/);
         expect(fallbackOpts.sessionKey).toBe(`agent:ops:explicit:${fallbackOpts.sessionId}`);
+        expect(loadConfig.mock.calls).toEqual([
+          [{ skipPluginValidation: true, pin: false }],
+          [{ skipPluginValidation: true, pin: false }],
+        ]);
       },
       { agents: { list: [{ id: "ops", default: true }, { id: "main" }] } },
     );
@@ -1621,6 +1629,7 @@ describe("agentCliCommand", () => {
       );
       expect(localOpts.agentId).toBe("ops");
       expect(localOpts.sessionKey).toBe("agent:ops:incident-42");
+      expect(loadConfig).toHaveBeenCalledWith();
     });
   });
 

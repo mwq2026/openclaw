@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -11,6 +11,7 @@ import {
 } from "../../scripts/changed-lanes.mjs";
 import {
   buildChangedCheckCrabboxArgs,
+  cleanupCorepackPnpmShimDir,
   createChangedCheckChildEnv,
   createChangedCheckPlan,
   createPnpmManagedCommand,
@@ -71,6 +72,7 @@ function parseChangedLaneOutput(output: string): {
 }
 
 afterEach(() => {
+  cleanupCorepackPnpmShimDir();
   cleanupTempDirs(tempDirs);
 });
 
@@ -228,14 +230,15 @@ describe("scripts/changed-lanes", () => {
     mkdirSync(path.join(dir, "src"), { recursive: true });
     writeFileSync(path.join(dir, "src", "feature.ts"), "export const value = 1;\n", "utf8");
 
-    const normalPaths = listChangedPathsFromGit({ base: "origin/main", cwd: dir });
-    expect(normalPaths.length).toBeGreaterThan(200);
-    expect(normalPaths).toContain("baseline-0.txt");
-    expect(normalPaths).toContain("src/feature.ts");
-
     const previousRawSync = process.env.OPENCLAW_CHANGED_LANES_RAW_SYNC;
-    process.env.OPENCLAW_CHANGED_LANES_RAW_SYNC = "1";
+    delete process.env.OPENCLAW_CHANGED_LANES_RAW_SYNC;
     try {
+      const normalPaths = listChangedPathsFromGit({ base: "origin/main", cwd: dir });
+      expect(normalPaths.length).toBeGreaterThan(200);
+      expect(normalPaths).toContain("baseline-0.txt");
+      expect(normalPaths).toContain("src/feature.ts");
+
+      process.env.OPENCLAW_CHANGED_LANES_RAW_SYNC = "1";
       expect(listChangedPathsFromGit({ base: "origin/main", cwd: dir })).toEqual([
         "src/feature.ts",
       ]);
@@ -501,6 +504,21 @@ describe("scripts/changed-lanes", () => {
     expect(command.args).toEqual(["pnpm", "check:no-conflict-markers"]);
   });
 
+  it("cleans CI Corepack pnpm shim temp dirs", () => {
+    const command = createPnpmManagedCommand(
+      { name: "conflict markers", args: ["check:no-conflict-markers"] },
+      { CI: "1", PATH: "/usr/bin" },
+    );
+    const [shimDir] = String(command.env?.PATH ?? "").split(path.delimiter);
+
+    expect(path.basename(shimDir)).toMatch(/^openclaw-corepack-pnpm-/u);
+    expect(existsSync(path.join(shimDir, "pnpm"))).toBe(true);
+
+    cleanupCorepackPnpmShimDir();
+
+    expect(existsSync(shimDir)).toBe(false);
+  });
+
   it("keeps local changed-check children on the repo pnpm shim", () => {
     const command = createPnpmManagedCommand(
       { name: "conflict markers", args: ["check:no-conflict-markers"] },
@@ -541,6 +559,7 @@ describe("scripts/changed-lanes", () => {
       "OPENCLAW_CHECK_CHANGED_REMOTE_CHILD=1",
       "OPENCLAW_CHANGED_LANES_RAW_SYNC=1",
       "CI=1",
+      "PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false",
       "corepack",
       "pnpm",
       "check:changed",

@@ -1,9 +1,9 @@
+// Covers config include-file permission audit findings.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConfigFileSnapshot } from "../config/types.openclaw.js";
-import { collectIncludeFilePermFindings } from "./audit-extra.async.js";
 
 const inspectPathPermissionsMock = vi.hoisted(() => vi.fn());
 
@@ -16,10 +16,12 @@ vi.mock("./audit-fs.js", () => ({
 
 describe("security audit config include permissions", () => {
   beforeEach(() => {
+    vi.resetModules();
     inspectPathPermissionsMock.mockReset();
   });
 
   it("flags group/world-readable config include files", async () => {
+    const { collectIncludeFilePermFindings } = await import("./audit-extra.async.js");
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-include-perms-"));
     const stateDir = path.join(tmp, "state");
     fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });

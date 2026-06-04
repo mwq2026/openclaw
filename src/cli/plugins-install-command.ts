@@ -65,9 +65,14 @@ function resolveInstallMode(force?: boolean): "install" | "update" {
 
 function resolveInstallSafetyOverrides(overrides: InstallSafetyOverrides): InstallSafetyOverrides {
   return {
+    config: overrides.config,
     dangerouslyForceUnsafeInstall: overrides.dangerouslyForceUnsafeInstall,
+    trustedSourceLinkedOfficialInstall: overrides.trustedSourceLinkedOfficialInstall,
   };
 }
+
+const DEPRECATED_DANGEROUS_FORCE_UNSAFE_INSTALL_WARNING =
+  "--dangerously-force-unsafe-install is deprecated and no longer affects plugin installs because built-in install-time dangerous-code scanning has been removed. Configure security.installPolicy for operator-owned install decisions.";
 
 function findTrustedCatalogPackageInstall(packageName: string):
   | {
@@ -144,6 +149,7 @@ async function installBundledPluginSource(params: {
   rawSpec: string;
   bundledSource: BundledPluginSource;
   warning: string;
+  invalidateRuntimeCache?: boolean;
   runtime?: RuntimeEnv;
 }) {
   const existingEntry = params.snapshot.config.plugins?.entries?.[params.bundledSource.pluginId];
@@ -170,6 +176,7 @@ async function installBundledPluginSource(params: {
       installPath: params.bundledSource.localPath,
     },
     enable: shouldEnable,
+    invalidateRuntimeCache: params.invalidateRuntimeCache,
     warningMessage: [params.warning, configWarning].filter(Boolean).join("\n"),
     runtime: params.runtime,
   });
@@ -309,6 +316,7 @@ async function tryInstallPluginOrHookPackFromNpmSpec(params: {
   expectedPluginId?: string;
   expectedIntegrity?: string;
   trustedSourceLinkedOfficialInstall?: boolean;
+  invalidateRuntimeCache?: boolean;
   runtime?: RuntimeEnv;
 }): Promise<{ ok: true } | { ok: false }> {
   const result = await installPluginFromNpmSpec({
@@ -324,7 +332,7 @@ async function tryInstallPluginOrHookPackFromNpmSpec(params: {
     logger: createPluginInstallLogger(params.runtime),
   });
   if (!result.ok) {
-    if (isTerminalPluginInstallSecurityFailure(result.code)) {
+    if (isTerminalPluginInstallFailure(result.code)) {
       (params.runtime ?? defaultRuntime).error(result.error);
       return { ok: false };
     }
@@ -340,6 +348,7 @@ async function tryInstallPluginOrHookPackFromNpmSpec(params: {
           rawSpec: params.spec,
           bundledSource: bundledFallbackPlan.bundledSource,
           warning: bundledFallbackPlan.warning,
+          invalidateRuntimeCache: params.invalidateRuntimeCache,
           runtime: params.runtime,
         });
         return { ok: true };
@@ -375,6 +384,7 @@ async function tryInstallPluginOrHookPackFromNpmSpec(params: {
     snapshot: params.snapshot,
     pluginId: result.pluginId,
     install: installRecord,
+    invalidateRuntimeCache: params.invalidateRuntimeCache,
     runtime: params.runtime,
   });
   return { ok: true };
@@ -386,6 +396,7 @@ async function tryInstallPluginFromNpmPackArchive(params: {
   archivePath: string;
   safetyOverrides: InstallSafetyOverrides;
   extensionsDir: string;
+  invalidateRuntimeCache?: boolean;
   runtime?: RuntimeEnv;
 }): Promise<{ ok: true } | { ok: false }> {
   const result = await installPluginFromNpmPackArchive({
@@ -423,6 +434,7 @@ async function tryInstallPluginFromNpmPackArchive(params: {
       ...(result.npmResolution?.shasum ? { npmShasum: result.npmResolution.shasum } : {}),
       ...(result.npmTarballName ? { npmTarballName: result.npmTarballName } : {}),
     },
+    invalidateRuntimeCache: params.invalidateRuntimeCache,
     runtime: params.runtime,
   });
   return { ok: true };
@@ -434,6 +446,7 @@ async function tryInstallPluginFromGitSpec(params: {
   spec: string;
   safetyOverrides: InstallSafetyOverrides;
   extensionsDir: string;
+  invalidateRuntimeCache?: boolean;
   runtime?: RuntimeEnv;
 }): Promise<{ ok: true } | { ok: false }> {
   const result = await installPluginFromGitSpec({
@@ -461,15 +474,17 @@ async function tryInstallPluginFromGitSpec(params: {
       gitRef: result.git.ref,
       gitCommit: result.git.commit,
     },
+    invalidateRuntimeCache: params.invalidateRuntimeCache,
     runtime: params.runtime,
   });
   return { ok: true };
 }
 
-function isTerminalPluginInstallSecurityFailure(code?: string): boolean {
+function isTerminalPluginInstallFailure(code?: string): boolean {
   return (
     code === PLUGIN_INSTALL_ERROR_CODE.SECURITY_SCAN_BLOCKED ||
-    code === PLUGIN_INSTALL_ERROR_CODE.SECURITY_SCAN_FAILED
+    code === PLUGIN_INSTALL_ERROR_CODE.SECURITY_SCAN_FAILED ||
+    code === PLUGIN_INSTALL_ERROR_CODE.UNSUPPORTED_PLAIN_FILE_PLUGIN
   );
 }
 
@@ -567,11 +582,13 @@ export async function runPluginInstallCommand(params: {
     pin?: boolean;
     marketplace?: string;
   };
+  invalidateRuntimeCache?: boolean;
   runtime?: RuntimeEnv;
 }) {
   assertConfigWriteAllowedInCurrentMode();
 
   const runtime = params.runtime ?? defaultRuntime;
+  const invalidateRuntimeCache = params.invalidateRuntimeCache ?? true;
   const shorthand = !params.opts.marketplace
     ? await tracePluginLifecyclePhaseAsync(
         "marketplace shortcut resolution",
@@ -590,6 +607,9 @@ export async function runPluginInstallCommand(params: {
     marketplace:
       params.opts.marketplace ?? (shorthand?.ok ? shorthand.marketplaceSource : undefined),
   };
+  if (opts.dangerouslyForceUnsafeInstall) {
+    runtime.log(theme.warn(DEPRECATED_DANGEROUS_FORCE_UNSAFE_INSTALL_WARNING));
+  }
   if (opts.marketplace) {
     if (opts.link) {
       runtime.error(
@@ -648,7 +668,7 @@ export async function runPluginInstallCommand(params: {
   }
   const cfg = snapshot.config;
   const installMode = resolveInstallMode(opts.force);
-  const safetyOverrides = resolveInstallSafetyOverrides(opts);
+  const safetyOverrides = resolveInstallSafetyOverrides({ ...opts, config: cfg });
   const extensionsDir = resolveDefaultPluginExtensionsDir();
 
   if (opts.marketplace) {
@@ -676,6 +696,7 @@ export async function runPluginInstallCommand(params: {
         marketplaceSource: result.marketplaceSource,
         marketplacePlugin: result.marketplacePlugin,
       },
+      invalidateRuntimeCache,
       runtime,
     });
     return;
@@ -696,7 +717,7 @@ export async function runPluginInstallCommand(params: {
         logger: createPluginInstallLogger(runtime),
       });
       if (!probe.ok) {
-        if (isTerminalPluginInstallSecurityFailure(probe.code)) {
+        if (isTerminalPluginInstallFailure(probe.code)) {
           runtime.error(probe.error);
           return runtime.exit(1);
         }
@@ -736,6 +757,7 @@ export async function runPluginInstallCommand(params: {
           installPath: resolved,
           version: probe.version,
         },
+        invalidateRuntimeCache,
         successMessage: `Linked plugin path: ${shortenHomePath(resolved)}`,
         runtime,
       });
@@ -750,7 +772,7 @@ export async function runPluginInstallCommand(params: {
       logger: createPluginInstallLogger(runtime),
     });
     if (!result.ok) {
-      if (isTerminalPluginInstallSecurityFailure(result.code)) {
+      if (isTerminalPluginInstallFailure(result.code)) {
         runtime.error(result.error);
         return runtime.exit(1);
       }
@@ -778,6 +800,7 @@ export async function runPluginInstallCommand(params: {
         installPath: result.targetDir,
         version: result.version,
       },
+      invalidateRuntimeCache,
       runtime,
     });
     return;
@@ -810,6 +833,7 @@ export async function runPluginInstallCommand(params: {
       safetyOverrides,
       allowBundledFallback: false,
       extensionsDir,
+      invalidateRuntimeCache,
       ...(officialNpmTrust
         ? {
             expectedPluginId: officialNpmTrust.pluginId,
@@ -841,6 +865,7 @@ export async function runPluginInstallCommand(params: {
       archivePath: npmPackPath,
       safetyOverrides,
       extensionsDir,
+      invalidateRuntimeCache,
       runtime,
     });
     if (!npmPackResult.ok) {
@@ -856,6 +881,7 @@ export async function runPluginInstallCommand(params: {
       spec: raw,
       safetyOverrides,
       extensionsDir,
+      invalidateRuntimeCache,
       runtime,
     });
     if (!gitResult.ok) {
@@ -895,6 +921,7 @@ export async function runPluginInstallCommand(params: {
           rawSpec: raw,
           bundledSource: bundledPreNpmPlan.bundledSource,
           warning: bundledPreNpmPlan.warning,
+          invalidateRuntimeCache,
           runtime,
         }),
       {
@@ -934,6 +961,7 @@ export async function runPluginInstallCommand(params: {
       expectedPluginId: officialExternalPlan.pluginId,
       expectedIntegrity: officialExternalPlan.expectedIntegrity,
       trustedSourceLinkedOfficialInstall: true,
+      invalidateRuntimeCache,
       runtime,
     });
     if (!npmResult.ok) {
@@ -964,6 +992,7 @@ export async function runPluginInstallCommand(params: {
         spec: raw,
         installPath: result.targetDir,
       },
+      invalidateRuntimeCache,
       runtime,
     });
     return;
@@ -981,6 +1010,7 @@ export async function runPluginInstallCommand(params: {
     safetyOverrides,
     allowBundledFallback: true,
     extensionsDir,
+    invalidateRuntimeCache,
     ...(officialNpmTrust
       ? {
           expectedPluginId: officialNpmTrust.pluginId,

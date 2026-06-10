@@ -31,6 +31,7 @@
     "EXINIT",
     "FPATH",
     "GCONV_PATH",
+    "GIT_ALLOW_PROTOCOL",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_COMMON_DIR",
     "GIT_DIR",
@@ -41,6 +42,7 @@
     "GIT_INDEX_FILE",
     "GIT_NAMESPACE",
     "GIT_OBJECT_DIRECTORY",
+    "GIT_PROTOCOL_FROM_USER",
     "GIT_SEQUENCE_EDITOR",
     "GIT_SSL_CAINFO",
     "GIT_SSL_CAPATH",
@@ -224,6 +226,11 @@
     "REQUESTS_CA_BUNDLE",
     "RUSTC_WRAPPER",
     "RUSTFLAGS",
+    "RUSTUP_DIST_ROOT",
+    "RUSTUP_DIST_SERVER",
+    "RUSTUP_HOME",
+    "RUSTUP_TOOLCHAIN",
+    "RUSTUP_UPDATE_ROOT",
     "R_LIBS_USER",
     "SSH_ASKPASS",
     "SSH_AUTH_SOCK",
@@ -252,5 +259,5 @@
     "YARN_RC_FILENAME",
     "ZDOTDIR"
   ],
-  "expectedTotalReportedEntries": 247
+  "expectedTotalReportedEntries": 254
 }

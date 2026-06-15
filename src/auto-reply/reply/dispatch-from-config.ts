@@ -159,6 +159,11 @@ import {
   replyRunRegistry,
   type ReplyOperation,
 } from "./reply-run-registry.js";
+import {
+  createReplyDeliveryContext,
+  resolveReplyDeliveryAccountId,
+  resolveReplyToMode,
+} from "./reply-threading.js";
 import { isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { admitReplyTurn, resolveReplyTurnKind } from "./reply-turn-admission.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
@@ -748,6 +753,7 @@ async function clearPendingFinalDeliveryAfterSuccess(params: {
         pendingFinalDeliveryAttemptCount: undefined,
         pendingFinalDeliveryLastError: undefined,
         pendingFinalDeliveryContext: undefined,
+        pendingFinalDeliveryIntentId: undefined,
         updatedAt: Date.now(),
       };
     },
@@ -1299,7 +1305,7 @@ export async function dispatchReplyFromConfig(
   const ensureDispatchReplyOperation = async (
     phase: "pre_dispatch" | "dispatch",
   ): Promise<DispatchReplyOperationAcquisition> => {
-    if (dispatchReplyOperation && !dispatchReplyOperation.result) {
+    if (dispatchReplyOperation) {
       return { status: "ready" };
     }
     if (dispatchAbortOperation && !dispatchAbortOperation.result) {
@@ -1429,6 +1435,7 @@ export async function dispatchReplyFromConfig(
       return { status: "busy" };
     }
     dispatchReplyOperation = admission.operation;
+    dispatchReplyOperation.retainFailureUntilComplete();
     dispatchAbortOperation = admission.operation;
     return { status: "ready" };
   };
@@ -1499,13 +1506,23 @@ export async function dispatchReplyFromConfig(
   };
   const completeDispatchReplyOperation = () => {
     if (dispatchReplyOperation) {
-      dispatchReplyOperation.complete();
+      dispatchReplyOperation.completeWithAfterClearBarrier(
+        waitForReplyDispatcherIdle(dispatcher),
+        dispatcher.resolveFollowupAdmissionBarrierTimeoutPolicy?.(),
+      );
     }
   };
   const failDispatchReplyOperation = (error: unknown) => {
-    if (dispatchReplyOperation && !dispatchReplyOperation.result) {
+    if (!dispatchReplyOperation) {
+      return;
+    }
+    if (!dispatchReplyOperation.result) {
       dispatchReplyOperation.fail("run_failed", error);
     }
+    dispatchReplyOperation.completeWithAfterClearBarrier(
+      waitForReplyDispatcherIdle(dispatcher),
+      dispatcher.resolveFollowupAdmissionBarrierTimeoutPolicy?.(),
+    );
   };
   const isDispatchOperationAborted = () => getDispatchAbortSignal()?.aborted === true;
   const isPreDispatchOperationAborted = () => getPreDispatchAbortSignal()?.aborted === true;
@@ -1589,6 +1606,15 @@ export async function dispatchReplyFromConfig(
   });
   const routeReplyTo = replyRoute.to;
   const deliveryChannel = shouldRouteToOriginating ? routeReplyChannel : currentSurface;
+  const routedReplyAccountId = routeReplyChannel
+    ? resolveReplyDeliveryAccountId(cfg, routeReplyChannel, replyRoute.accountId)
+    : undefined;
+  const routedReplyDelivery = routeReplyChannel
+    ? createReplyDeliveryContext(
+        resolveReplyToMode(cfg, routeReplyChannel, routedReplyAccountId, replyRoute.chatType),
+        replyRoute.chatType,
+      )
+    : undefined;
   let normalizeReplyMediaPaths:
     | ReturnType<
         (typeof import("./reply-media-paths.runtime.js"))["createReplyMediaPathNormalizer"]
@@ -1604,7 +1630,7 @@ export async function dispatchReplyFromConfig(
       sessionKey: acpDispatchSessionKey,
       workspaceDir,
       messageProvider: deliveryChannel,
-      accountId: replyRoute.accountId,
+      accountId: routedReplyAccountId,
       groupId,
       groupChannel: ctx.GroupChannel,
       groupSpace: ctx.GroupSpace,
@@ -1645,12 +1671,13 @@ export async function dispatchReplyFromConfig(
       sessionKey: agentRuntimeSessionKey,
       policySessionKey: resolveCommandTurnTargetSessionKey(ctx) ?? ctx.SessionKey,
       policyConversationType: resolveRoutedPolicyConversationType(ctx),
-      accountId: replyRoute.accountId,
+      accountId: routedReplyAccountId,
       requesterSenderId: ctx.SenderId,
       requesterSenderName: ctx.SenderName,
       requesterSenderUsername: ctx.SenderUsername,
       requesterSenderE164: ctx.SenderE164,
       threadId: routeReplyThreadId,
+      replyDelivery: routedReplyDelivery,
       cfg,
       abortSignal: options?.abortSignal,
       mirror: options?.mirror,
@@ -2473,8 +2500,9 @@ export async function dispatchReplyFromConfig(
               shouldRouteToOriginating,
               originatingChannel: routeReplyChannel,
               originatingTo: routeReplyTo,
-              originatingAccountId: replyRoute.accountId,
+              originatingAccountId: routedReplyAccountId,
               originatingThreadId: routeReplyThreadId,
+              originatingChatType: replyRoute.chatType,
               shouldSendToolSummaries,
               sendPolicy,
             }),
@@ -3182,8 +3210,9 @@ export async function dispatchReplyFromConfig(
               shouldRouteToOriginating,
               originatingChannel: routeReplyChannel,
               originatingTo: routeReplyTo,
-              originatingAccountId: replyRoute.accountId,
+              originatingAccountId: routedReplyAccountId,
               originatingThreadId: routeReplyThreadId,
+              originatingChatType: replyRoute.chatType,
               shouldSendToolSummaries,
               sendPolicy,
               isTailDispatch: true,
@@ -3269,11 +3298,15 @@ export async function dispatchReplyFromConfig(
     }
 
     if (attemptedFinalDelivery && !finalDeliveryFailed) {
-      throwIfDispatchOperationAborted();
+      // The final reply already shipped, so clear the durable pending-final
+      // bookkeeping before honoring a late abort. A stuck-session recovery abort
+      // racing this window (#89115) otherwise strands pendingFinalDelivery=true,
+      // and the get-reply redelivery short-circuit then silently blocks all inbound.
       await clearPendingFinalDeliveryAfterSuccess({
         storePath: sessionStoreEntry.storePath,
         sessionKey: sessionStoreEntry.sessionKey ?? sessionKey,
       });
+      throwIfDispatchOperationAborted();
     }
 
     if (!suppressDelivery) {

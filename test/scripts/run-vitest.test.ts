@@ -293,6 +293,19 @@ describe("scripts/run-vitest", () => {
     ]);
   });
 
+  it("delegates bare explicit directories and globs to the project router", () => {
+    expect(resolveTestProjectsDelegationArgs(["test/scripts"])).toEqual(["test/scripts"]);
+    expect(
+      resolveTestProjectsDelegationArgs(["run", "test/scripts", "--reporter=verbose"]),
+    ).toEqual(["test/scripts", "--reporter=verbose"]);
+    expect(resolveTestProjectsDelegationArgs(["test/scripts/*.test.ts"])).toEqual([
+      "test/scripts/*.test.ts",
+    ]);
+    expect(resolveTestProjectsDelegationArgs(["src/agents/**/*.ts"])).toBeNull();
+    expect(resolveTestProjectsDelegationArgs(["src/**/*.test.ts"])).toBeNull();
+    expect(resolveTestProjectsDelegationArgs(["./src"])).toBeNull();
+  });
+
   it("delegates mixed filters when an explicit file target is present", () => {
     expect(
       resolveTestProjectsDelegationArgs(["src/agents", "test/scripts/run-vitest.test.ts"]),
@@ -907,6 +920,36 @@ describe("scripts/run-vitest", () => {
       );
 
       teardown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps force-kill scheduled when output arrives after the idle timeout", () => {
+    vi.useFakeTimers();
+    try {
+      const stdout = new EventEmitter();
+      const timeoutSpy = vi.fn();
+      const forceKillSpy = vi.fn();
+
+      installVitestNoOutputWatchdog({
+        streams: [stdout],
+        timeoutMs: 1000,
+        forceKillAfterMs: 5000,
+        onTimeout: timeoutSpy,
+        onForceKill: forceKillSpy,
+        setTimeoutFn: setTimeout,
+        clearTimeoutFn: clearTimeout,
+      });
+
+      vi.advanceTimersByTime(1000);
+      expect(timeoutSpy).toHaveBeenCalledTimes(1);
+
+      stdout.emit("data", "too late");
+      vi.advanceTimersByTime(5000);
+
+      expect(timeoutSpy).toHaveBeenCalledTimes(1);
+      expect(forceKillSpy).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

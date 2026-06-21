@@ -8,6 +8,11 @@ import path from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  resolveWindowsPowerShellPath,
+  resolveWindowsSystem32Path,
+  resolveWindowsTaskkillPath,
+} from "../lib/windows-taskkill.mjs";
 
 const PLUGIN_SPEC =
   process.env.OPENCLAW_KITCHEN_SINK_NPM_SPEC || "npm:@openclaw/kitchen-sink@latest";
@@ -574,12 +579,42 @@ function commandProcessTreeIsAlive(child) {
   }
 }
 
-function signalProcessGroup(child, signal) {
-  if (process.platform !== "win32" && typeof child.pid === "number") {
+function signalWindowsProcessTree(pid, signal, runTaskkill = childProcess.spawnSync) {
+  const taskkillPath = resolveWindowsTaskkillPath();
+  const args = ["/PID", String(pid), "/T"];
+  if (signal === "SIGKILL") {
+    args.push("/F");
+  }
+  const result = runTaskkill(taskkillPath, args, { stdio: "ignore" });
+  return !result?.error && result?.status === 0;
+}
+
+function signalWindowsProcessTreeOrForce(pid, signal, runTaskkill = childProcess.spawnSync) {
+  if (signalWindowsProcessTree(pid, signal, runTaskkill)) {
+    return true;
+  }
+  return signal !== "SIGKILL" && signalWindowsProcessTree(pid, "SIGKILL", runTaskkill);
+}
+
+export function signalProcessGroup(
+  child,
+  signal,
+  {
+    platform = process.platform,
+    runTaskkill = childProcess.spawnSync,
+    useProcessGroup = platform !== "win32",
+  } = {},
+) {
+  if (useProcessGroup && typeof child.pid === "number") {
     try {
       process.kill(-child.pid, signal);
       return;
     } catch {}
+  }
+  if (platform === "win32" && typeof child.pid === "number") {
+    if (signalWindowsProcessTreeOrForce(child.pid, signal, runTaskkill)) {
+      return;
+    }
   }
   try {
     child.kill(signal);
@@ -624,7 +659,7 @@ async function resolveOpenClawCommand(runner, args, env, options = {}) {
   };
 }
 
-function parseJsonOutput(stdout) {
+export function parseJsonOutput(stdout) {
   const trimmed = stdout.trim();
   if (!trimmed) {
     throw new Error("command produced no JSON output");
@@ -757,6 +792,9 @@ function extractBalancedJsonObjects(text) {
     if (text[index] !== "{") {
       continue;
     }
+    if (!isJsonObjectRecordStart(text, index)) {
+      continue;
+    }
     const end = findBalancedJsonObjectEnd(text, index);
     if (end > index) {
       candidates.push(text.slice(index, end + 1));
@@ -764,6 +802,17 @@ function extractBalancedJsonObjects(text) {
     }
   }
   return candidates;
+}
+
+function isJsonObjectRecordStart(text, index) {
+  if (index === 0) {
+    return true;
+  }
+  let cursor = index - 1;
+  while (cursor >= 0 && (text[cursor] === " " || text[cursor] === "\t")) {
+    cursor -= 1;
+  }
+  return cursor < 0 || text[cursor] === "\n" || text[cursor] === "\r";
 }
 
 function findBalancedJsonObjectEnd(text, startIndex) {
@@ -1299,8 +1348,13 @@ function releaseUnsettledGatewayChild(child) {
   child.unref?.();
 }
 
-function signalGateway(child, signal, killProcess = defaultKillProcess) {
-  if (process.platform !== "win32" && typeof child.pid === "number") {
+export function signalGateway(child, signal, killProcess = defaultKillProcess, options = {}) {
+  const {
+    platform = process.platform,
+    runTaskkill = childProcess.spawnSync,
+    useProcessGroup = platform !== "win32",
+  } = options;
+  if (useProcessGroup && typeof child.pid === "number") {
     try {
       killProcess(-child.pid, signal);
       return true;
@@ -1308,6 +1362,11 @@ function signalGateway(child, signal, killProcess = defaultKillProcess) {
       if (error?.code === "ESRCH") {
         return false;
       }
+    }
+  }
+  if (platform === "win32" && typeof child.pid === "number") {
+    if (signalWindowsProcessTreeOrForce(child.pid, signal, runTaskkill)) {
+      return true;
     }
   }
   try {
@@ -2188,7 +2247,7 @@ async function sampleWindowsPidWithTasklist(pid, run) {
   }
   try {
     const { stdout } = await run(
-      "tasklist.exe",
+      resolveWindowsSystem32Path("tasklist.exe"),
       ["/FI", `PID eq ${safePid}`, "/FO", "CSV", "/NH"],
       { timeoutMs: 15000 },
     );
@@ -2225,7 +2284,9 @@ export async function sampleWindowsProcessByPort(port, options = {}) {
   }
   const run = options.runCommand ?? runCommand;
   try {
-    const { stdout } = await run("netstat.exe", ["-ano", "-p", "tcp"], { timeoutMs: 15000 });
+    const { stdout } = await run(resolveWindowsSystem32Path("netstat.exe"), ["-ano", "-p", "tcp"], {
+      timeoutMs: 15000,
+    });
     const pid = stdout
       .split(/\r?\n/u)
       .map((line) => line.trim())
@@ -2285,40 +2346,38 @@ async function sampleWindowsProcess(pid, run, commandLineNeedles = []) {
     "if ($null -ne $process.CPU) { $cpu = $process.CPU }",
     "[Console]::Out.Write(('{0} {1} {2} {3}' -f $process.WorkingSet64, $cpu, $process.Id, $totalWorkingSet))",
   ].join("; ");
-  for (const powershell of ["powershell.exe", "powershell"]) {
-    try {
-      const { stdout } = await run(
-        powershell,
-        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
-        { timeoutMs: 15000 },
-      );
-      const [workingSetBytesRaw, cpuSecondsRaw, processIdRaw, aggregateWorkingSetBytesRaw] = stdout
-        .trim()
-        .split(/\s+/u);
-      const workingSetBytes = parseStrictUnsignedInteger(workingSetBytesRaw);
-      const aggregateWorkingSetBytes = parseStrictUnsignedInteger(
-        aggregateWorkingSetBytesRaw ?? workingSetBytesRaw ?? "",
-      );
-      const cpuSeconds = parseStrictNonNegativeDecimal(cpuSecondsRaw);
-      const processId = parseStrictUnsignedInteger(processIdRaw);
-      if (workingSetBytes === null) {
-        return null;
-      }
-      return {
-        rssMiB: Math.round((workingSetBytes / 1024 / 1024) * 10) / 10,
-        aggregateRssMiB:
-          aggregateWorkingSetBytes !== null
-            ? Math.round((aggregateWorkingSetBytes / 1024 / 1024) * 10) / 10
-            : Math.round((workingSetBytes / 1024 / 1024) * 10) / 10,
-        cpuPercent: null,
-        cpuSeconds,
-        processId: processId ?? safePid,
-      };
-    } catch {
-      // Try the next Windows PowerShell command name.
+  const powershell = resolveWindowsPowerShellPath();
+  try {
+    const { stdout } = await run(
+      powershell,
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+      { timeoutMs: 15000 },
+    );
+    const [workingSetBytesRaw, cpuSecondsRaw, processIdRaw, aggregateWorkingSetBytesRaw] = stdout
+      .trim()
+      .split(/\s+/u);
+    const workingSetBytes = parseStrictUnsignedInteger(workingSetBytesRaw);
+    const aggregateWorkingSetBytes = parseStrictUnsignedInteger(
+      aggregateWorkingSetBytesRaw ?? workingSetBytesRaw ?? "",
+    );
+    const cpuSeconds = parseStrictNonNegativeDecimal(cpuSecondsRaw);
+    const processId = parseStrictUnsignedInteger(processIdRaw);
+    if (workingSetBytes === null) {
+      return null;
     }
+    return {
+      rssMiB: Math.round((workingSetBytes / 1024 / 1024) * 10) / 10,
+      aggregateRssMiB:
+        aggregateWorkingSetBytes !== null
+          ? Math.round((aggregateWorkingSetBytes / 1024 / 1024) * 10) / 10
+          : Math.round((workingSetBytes / 1024 / 1024) * 10) / 10,
+      cpuPercent: null,
+      cpuSeconds,
+      processId: processId ?? safePid,
+    };
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function assertProcessResourceCeiling(sample, { label, maxRssMiB, requireSample = true }) {

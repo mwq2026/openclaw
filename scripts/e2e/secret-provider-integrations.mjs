@@ -8,6 +8,7 @@ import path from "node:path";
 import process from "node:process";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { resolveWindowsTaskkillPath } from "../lib/windows-taskkill.mjs";
 
 const PLUGIN_ID = "secret-provider-proof";
 const INTEGRATION_ID = "vault";
@@ -190,12 +191,76 @@ function parseJsonOutput(stdout) {
   if (!text) {
     throw new Error("expected JSON output, got empty stdout");
   }
-  const first = text.indexOf("{");
-  const last = text.lastIndexOf("}");
-  if (first < 0 || last < first) {
+  const parsed = parseJsonObjectsFromMixedOutput(text).at(-1);
+  if (parsed === undefined) {
     throw new Error(`expected JSON object output, got: ${scrub(text.slice(0, 500))}`);
   }
-  return JSON.parse(text.slice(first, last + 1));
+  return parsed;
+}
+
+function isJsonRecordStart(text, index) {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const char = text[cursor];
+    if (char === "\n" || char === "\r") {
+      return true;
+    }
+    if (char !== " " && char !== "\t") {
+      return false;
+    }
+  }
+  return true;
+}
+
+function parseJsonObjectsFromMixedOutput(text) {
+  const objects = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (start === -1) {
+      if (char === "{" && isJsonRecordStart(text, index)) {
+        start = index;
+        depth = 1;
+        inString = false;
+        escaped = false;
+      }
+      continue;
+    }
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char !== "}") {
+      continue;
+    }
+
+    depth -= 1;
+    if (depth === 0) {
+      try {
+        objects.push(JSON.parse(text.slice(start, index + 1)));
+      } catch {}
+      start = -1;
+    }
+  }
+  return objects;
 }
 
 function resolveOpenClawRunner() {
@@ -964,17 +1029,42 @@ async function waitForProcessTreeExit(child, timeoutMs) {
   return !processTreeIsAlive(child);
 }
 
-function terminateProcessTree(child, signal) {
-  if (process.platform === "win32") {
-    try {
-      childProcess.spawnSync("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
-        stdio: "ignore",
-      });
-      return;
-    } catch {
-      child.kill(signal);
+function signalWindowsProcessTree(pid, signal, runTaskkill = childProcess.spawnSync) {
+  const args = ["/PID", String(pid), "/T"];
+  if (signal === "SIGKILL") {
+    args.push("/F");
+  }
+  try {
+    const result = runTaskkill(resolveWindowsTaskkillPath(), args, { stdio: "ignore" });
+    return !result?.error && result?.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+function signalWindowsProcessTreeOrForce(pid, signal, runTaskkill = childProcess.spawnSync) {
+  if (signalWindowsProcessTree(pid, signal, runTaskkill)) {
+    return true;
+  }
+  return signal !== "SIGKILL" && signalWindowsProcessTree(pid, "SIGKILL", runTaskkill);
+}
+
+function terminateProcessTree(child, signal, options = {}) {
+  const {
+    platform = process.platform,
+    runTaskkill = childProcess.spawnSync,
+    useProcessGroup = platform !== "win32",
+  } = options;
+  if (platform === "win32" && typeof child.pid === "number") {
+    if (signalWindowsProcessTreeOrForce(child.pid, signal, runTaskkill)) {
       return;
     }
+    child.kill(signal);
+    return;
+  }
+  if (!useProcessGroup) {
+    child.kill(signal);
+    return;
   }
   try {
     process.kill(-child.pid, signal);
@@ -1833,12 +1923,22 @@ async function waitForPtyProcessTreeExit(child, timeoutMs) {
   return !ptyProcessTreeIsAlive(child);
 }
 
-function signalPtyProcessTree(child, signal) {
-  if (process.platform !== "win32" && typeof child.pid === "number") {
+function signalPtyProcessTree(child, signal, options = {}) {
+  const {
+    platform = process.platform,
+    runTaskkill = childProcess.spawnSync,
+    useProcessGroup = platform !== "win32",
+  } = options;
+  if (useProcessGroup && typeof child.pid === "number") {
     try {
       process.kill(-child.pid, signal);
       return;
     } catch {}
+  }
+  if (platform === "win32" && typeof child.pid === "number") {
+    if (signalWindowsProcessTreeOrForce(child.pid, signal, runTaskkill)) {
+      return;
+    }
   }
   child.kill(signal);
 }
@@ -2056,11 +2156,14 @@ export {
   cleanupEnv,
   expectGatewayStartupFails,
   gatewayCall,
+  parseJsonOutput,
   runPtySecretsConfigurePreset,
   runWithProof,
   runCommand,
+  signalPtyProcessTree,
   skipProof,
   startGateway,
+  terminateProcessTree,
   waitForManagedGatewayStatus,
   writeProofPlugin,
 };

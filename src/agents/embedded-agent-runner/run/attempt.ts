@@ -42,14 +42,17 @@ import {
   freezeDiagnosticTraceContext,
 } from "../../../infra/diagnostic-trace-context.js";
 import { isEmbeddedMode } from "../../../infra/embedded-mode.js";
-import { formatErrorMessage } from "../../../infra/errors.js";
+import { formatErrorMessage, toErrorObject } from "../../../infra/errors.js";
 import { resolveHeartbeatSummaryForAgent } from "../../../infra/heartbeat-summary.js";
 import { getMachineDisplayName } from "../../../infra/machine-name.js";
 import { createCodexNativeWebSearchWrapper } from "../../../llm/providers/stream-wrappers/openai.js";
 import type { AssistantMessage } from "../../../llm/types.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../../plugins/command-registry-state.js";
 import { getCurrentPluginMetadataSnapshot } from "../../../plugins/current-plugin-metadata-snapshot.js";
-import { buildAgentHookContextChannelFields } from "../../../plugins/hook-agent-context.js";
+import {
+  buildAgentHookContextChannelFields,
+  buildAgentHookContextIdentityFields,
+} from "../../../plugins/hook-agent-context.js";
 import { resolveBlockMessage } from "../../../plugins/hook-decision-types.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.types.js";
@@ -1268,6 +1271,7 @@ export async function runEmbeddedAttempt(
             memberRoleIds: params.memberRoleIds,
             spawnedBy: params.spawnedBy,
             senderId: params.senderId,
+            channelContext: params.channelContext,
             senderName: params.senderName,
             senderUsername: params.senderUsername,
             senderE164: params.senderE164,
@@ -3518,6 +3522,12 @@ export async function runEmbeddedAttempt(
                 modelId: reportedModelRef.model,
                 trigger: params.trigger,
                 ...buildAgentHookContextChannelFields(params),
+                ...buildAgentHookContextIdentityFields({
+                  trigger: params.trigger,
+                  senderId: params.senderId,
+                  chatId: params.chatId,
+                  channelContext: params.channelContext,
+                }),
               },
               hookRunner,
             });
@@ -3596,6 +3606,7 @@ export async function runEmbeddedAttempt(
           },
           enforceFinalTag: params.enforceFinalTag,
           silentExpected: params.silentExpected,
+          suppressLiveStreamOutput: params.suppressLiveStreamOutput,
           config: params.config,
           sessionKey: sandboxSessionKey,
           currentChannelId: params.currentChannelId,
@@ -3926,6 +3937,12 @@ export async function runEmbeddedAttempt(
           modelId: params.model.id,
           trigger: params.trigger,
           ...buildAgentHookContextChannelFields(params),
+          ...buildAgentHookContextIdentityFields({
+            trigger: params.trigger,
+            senderId: params.senderId,
+            chatId: params.chatId,
+            channelContext: params.channelContext,
+          }),
         };
         const promptBuildMessages =
           pruneProcessedHistoryImages(activeSession.messages) ?? activeSession.messages;
@@ -4546,6 +4563,12 @@ export async function runEmbeddedAttempt(
                   workspaceDir: params.workspaceDir,
                   trigger: params.trigger,
                   ...buildAgentHookContextChannelFields(params),
+                  ...buildAgentHookContextIdentityFields({
+                    trigger: params.trigger,
+                    senderId: params.senderId,
+                    chatId: params.chatId,
+                    channelContext: params.channelContext,
+                  }),
                 },
               )
               .catch((err: unknown) => {
@@ -5222,6 +5245,12 @@ export async function runEmbeddedAttempt(
               trigger: params.trigger,
               ...(params.config ? { config: params.config } : {}),
               ...buildAgentHookContextChannelFields(params),
+              ...buildAgentHookContextIdentityFields({
+                trigger: params.trigger,
+                senderId: params.senderId,
+                chatId: params.chatId,
+                channelContext: params.channelContext,
+              }),
             },
             hookRunner,
           });
@@ -5386,6 +5415,12 @@ export async function runEmbeddedAttempt(
                 ? { contextWindowReferenceTokens: params.contextWindowInfo.referenceTokens }
                 : {}),
               ...buildAgentHookContextChannelFields(params),
+              ...buildAgentHookContextIdentityFields({
+                trigger: params.trigger,
+                senderId: params.senderId,
+                chatId: params.chatId,
+                channelContext: params.channelContext,
+              }),
             },
           )
           .catch((err: unknown) => {
@@ -5737,7 +5772,7 @@ export async function runEmbeddedAttempt(
             }),
           );
         } else {
-          await Promise.reject(toLintErrorObject(cleanupFailure, "Non-Error rejection"));
+          await Promise.reject(toErrorObject(cleanupFailure, "Non-Error rejection"));
         }
       }
     }
@@ -5766,18 +5801,4 @@ export async function runEmbeddedAttempt(
     );
     restoreSkillEnv?.();
   }
-}
-
-function toLintErrorObject(value: unknown, fallbackMessage: string): Error {
-  if (value instanceof Error) {
-    return value;
-  }
-  if (typeof value === "string") {
-    return new Error(value);
-  }
-  const error = new Error(fallbackMessage, { cause: value });
-  if ((typeof value === "object" && value !== null) || typeof value === "function") {
-    Object.assign(error, value);
-  }
-  return error;
 }

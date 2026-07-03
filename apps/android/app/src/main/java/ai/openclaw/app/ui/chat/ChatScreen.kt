@@ -99,8 +99,7 @@ fun ChatScreen(
   val errorText by viewModel.chatError.collectAsState()
   val pendingRunCount by viewModel.pendingRunCount.collectAsState()
   val healthOk by viewModel.chatHealthOk.collectAsState()
-  val gatewayConnected by viewModel.isConnected.collectAsState()
-  val gatewayConnectionProblem by viewModel.gatewayConnectionProblem.collectAsState()
+  val gatewayConnectionDisplay by viewModel.gatewayConnectionDisplay.collectAsState()
   val sessionKey by viewModel.chatSessionKey.collectAsState()
   val mainSessionKey by viewModel.mainSessionKey.collectAsState()
   val thinkingLevel by viewModel.chatThinkingLevel.collectAsState()
@@ -109,16 +108,15 @@ fun ChatScreen(
   val sessions by viewModel.chatSessions.collectAsState()
   val chatDraft by viewModel.chatDraft.collectAsState()
   val pendingAssistantAutoSend by viewModel.pendingAssistantAutoSend.collectAsState()
-  val statusText by viewModel.statusText.collectAsState()
   val remoteAddress by viewModel.remoteAddress.collectAsState()
   val manualHost by viewModel.manualHost.collectAsState()
   val manualPort by viewModel.manualPort.collectAsState()
   val manualTls by viewModel.manualTls.collectAsState()
   val contextUsage = resolveChatContextUsage(sessionKey = sessionKey, mainSessionKey = mainSessionKey, sessions = sessions)
   val gatewayAddress = gatewayDiagnosticsEndpoint(remoteAddress = remoteAddress, manualHost = manualHost, manualPort = manualPort, manualTls = manualTls)
-  val gatewayProblemMessage = gatewayConnectionProblem?.message?.takeIf { it.isNotBlank() }
-  val offlineStatus = gatewayStatusForDisplay(gatewayProblemMessage ?: statusText)
-  val gatewayOffline = !gatewayConnected
+  val gatewayProblemMessage = gatewayConnectionDisplay.problem?.message?.takeIf { it.isNotBlank() }
+  val offlineStatus = gatewayStatusForDisplay(gatewayProblemMessage ?: gatewayConnectionDisplay.statusText)
+  val gatewayOffline = !gatewayConnectionDisplay.isConnected
   val context = LocalContext.current
   val resolver = context.contentResolver
   val scope = rememberCoroutineScope()
@@ -200,7 +198,10 @@ fun ChatScreen(
     )
 
     errorText?.takeIf { it.isNotBlank() }?.let { error ->
-      ChatNotice(title = "Chat needs attention", body = userFacingChatError(error = error, gatewayConnected = gatewayConnected))
+      ChatNotice(
+        title = "Chat needs attention",
+        body = userFacingChatError(error = error, gatewayConnected = gatewayConnectionDisplay.isConnected),
+      )
     }
 
     ChatMessageList(
@@ -693,15 +694,7 @@ private fun ChatText(
   text: String,
   textColor: Color,
 ) {
-  if (text.hasMarkdownSyntax()) {
-    ChatMarkdown(text = text, textColor = textColor)
-  } else {
-    Text(
-      text = text,
-      style = ClawTheme.type.body,
-      color = textColor,
-    )
-  }
+  ChatMarkdown(text = text, textColor = textColor)
 }
 
 @Composable
@@ -1120,9 +1113,3 @@ internal fun contextMeterThinkingLabel(value: String): String =
   }
 
 private fun formatChatTimestamp(timestampMs: Long): String = DateFormat.getTimeInstance(DateFormat.SHORT, Locale.getDefault()).format(Date(timestampMs))
-
-/** Quick markdown detector used to avoid routing plain chat text through the markdown renderer. */
-private fun String.hasMarkdownSyntax(): Boolean =
-  any { it == '#' || it == '*' || it == '`' || it == '[' || it == '|' } ||
-    contains("\n- ") ||
-    contains("\n1. ")

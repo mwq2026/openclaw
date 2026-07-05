@@ -148,6 +148,9 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 
 /** Calculate total context tokens from provider usage. */
 export function calculateContextTokens(usage: Usage): number {
+  if (usage.contextUsage?.state === "available") {
+    return usage.contextUsage.totalTokens;
+  }
   return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
 }
 function getAssistantUsage(msg: AgentMessage): Usage | undefined {
@@ -184,7 +187,7 @@ export interface ContextUsageEstimate {
   tokens: number;
   /** Tokens reported by the most recent assistant usage block. */
   usageTokens: number;
-  /** Estimated tokens after the most recent assistant usage block. */
+  /** Estimated tokens not covered by usable provider usage. */
   trailingTokens: number;
   /** Index of the message that provided usage, or null when none exists. */
   lastUsageIndex: number | null;
@@ -195,7 +198,7 @@ function getLastAssistantUsageInfo(
 ): { usage: Usage; index: number } | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const usage = getAssistantUsage(messages[i]);
-    if (usage) {
+    if (usage && usage.contextUsage?.state !== "unavailable") {
       return { usage, index: i };
     }
   }
@@ -441,7 +444,7 @@ export function findCutPoint(
   };
 }
 
-export const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured summary following the exact format specified.
+export const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
 
@@ -800,9 +803,9 @@ export async function compact(
   let summary: string;
 
   if (isSplitTurn && turnPrefixMessages.length > 0) {
-    const [historyResult, turnPrefixResult] = await Promise.all([
+    const historyResult =
       messagesToSummarize.length > 0
-        ? generateSummary(
+        ? await generateSummary(
             messagesToSummarize,
             model,
             settings.reserveTokens,
@@ -815,22 +818,21 @@ export async function compact(
             streamFn,
             runtime,
           )
-        : Promise.resolve(ok<string, CompactionError>("No prior history.")),
-      generateTurnPrefixSummary(
-        turnPrefixMessages,
-        model,
-        settings.reserveTokens,
-        apiKey,
-        headers,
-        signal,
-        thinkingLevel,
-        streamFn,
-        runtime,
-      ),
-    ]);
+        : ok<string, CompactionError>("No prior history.");
     if (!historyResult.ok) {
       return err(historyResult.error);
     }
+    const turnPrefixResult = await generateTurnPrefixSummary(
+      turnPrefixMessages,
+      model,
+      settings.reserveTokens,
+      apiKey,
+      headers,
+      signal,
+      thinkingLevel,
+      streamFn,
+      runtime,
+    );
     if (!turnPrefixResult.ok) {
       return err(turnPrefixResult.error);
     }

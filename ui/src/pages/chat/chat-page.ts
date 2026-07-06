@@ -2,11 +2,13 @@ import { consume } from "@lit/context";
 import { html, LitElement } from "lit";
 import { property } from "lit/decorators.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import type { GatewaySessionRow } from "../../api/types.ts";
 import {
   applicationContext,
   type ApplicationContext,
   type ApplicationGatewaySnapshot,
 } from "../../app/context.ts";
+import { hasOperatorAdminAccess } from "../../app/operator-access.ts";
 import {
   COMMAND_PALETTE_TARGET_EVENT,
   type CommandPaletteTargetDetail,
@@ -27,6 +29,7 @@ import {
   resolveUiConfiguredMainKey,
   uiSessionEventMatches,
 } from "../../lib/sessions/session-key.ts";
+import { SessionUnreadPatchGuard } from "../../lib/sessions/unread.ts";
 import { refreshChatAvatar } from "./chat-avatar.ts";
 import { refreshSlashCommands } from "./chat-commands.ts";
 import {
@@ -71,7 +74,10 @@ import {
   type SidebarFullMessageRequest,
 } from "./components/chat-sidebar.ts";
 import { exportChatMarkdown } from "./export.ts";
-import { hasAbortableSessionRun } from "./run-lifecycle.ts";
+import {
+  hasAbortableSessionRun,
+  reconcileStaleChatRunAfterSessionStatePublication,
+} from "./run-lifecycle.ts";
 import { scheduleChatScroll } from "./scroll.ts";
 import { clearChatMessagesFromCache } from "./session-message-cache.ts";
 
@@ -83,7 +89,7 @@ type ChatRouteData = {
 type ChatPageContext = ApplicationContext;
 
 const CHAT_OPEN_DETAILS_SELECTOR =
-  ".chat-controls__inline-select[open], .agent-chat__talk-select[open], .agent-chat__talk-options-advanced[open]";
+  ".chat-controls__inline-select[open], .context-usage details[open], .agent-chat__talk-select[open]";
 
 const NEW_SESSION_ACTIVE_RUN_MESSAGE =
   "Start a new session after the active run or queued messages finish.";
@@ -92,7 +98,7 @@ const NEW_SESSION_LIST_LOADING_MESSAGE =
 const NEW_SESSION_CREATE_FAILED_MESSAGE =
   "New Chat could not create a new session. Try again in a moment.";
 
-export class ChatPage extends LitElement {
+class ChatPage extends LitElement {
   @consume({ context: applicationContext, subscribe: false })
   private context!: ChatPageContext;
   @property({ attribute: false }) data!: ChatRouteData;
@@ -101,6 +107,25 @@ export class ChatPage extends LitElement {
   private state: ChatPageHost | undefined;
   private connectedClient: GatewayBrowserClient | null = null;
   private connectionGeneration = 0;
+  private readonly unreadPatchGuard = new SessionUnreadPatchGuard();
+
+  private markSessionRead(row: GatewaySessionRow | undefined) {
+    const state = this.state;
+    if (
+      !state?.connected ||
+      !row ||
+      !this.unreadPatchGuard.shouldPatch(state.sessionKey, row.unread)
+    ) {
+      return;
+    }
+    const agentId = parseAgentSessionKey(row.key)?.agentId ?? resolveChatAgentId(state);
+    const guardKey = state.sessionKey;
+    void this.context.sessions.patch(row.key, { unread: false }, { agentId }).catch(() => {
+      // Unlatch so later unread snapshots retry; the session capability
+      // publishes the actionable error for the owning page.
+      this.unreadPatchGuard.patchFailed(guardKey);
+    });
+  }
 
   private applyRouteSessionKey(sessionKey: string) {
     const state = this.state;
@@ -130,6 +155,7 @@ export class ChatPage extends LitElement {
     const nextSessionRow = state.sessionsResult?.sessions.find((row) => row.key === nextSessionKey);
     const nextSessionLabel = resolveSessionDisplayName(nextSessionKey, nextSessionRow);
     resetChatStateForRouteSession(state, nextSessionKey);
+    this.markSessionRead(nextSessionRow);
     this.context.gateway.setSessionKey(nextSessionKey);
     if (previousSessionKey !== nextSessionKey) {
       state.announceSessionSwitch?.(nextSessionKey, nextSessionLabel);
@@ -465,6 +491,7 @@ export class ChatPage extends LitElement {
     );
     if (selectedSession) {
       state.selectedChatSessionArchived = selectedSession.archived === true;
+      this.markSessionRead(selectedSession);
     }
     if (selectedSessionDeleted) {
       const agentId =
@@ -484,7 +511,10 @@ export class ChatPage extends LitElement {
       });
       return;
     }
-    state.requestUpdate?.();
+    const reconciledLocalCompletion = reconcileStaleChatRunAfterSessionStatePublication(state);
+    if (!reconciledLocalCompletion) {
+      state.requestUpdate?.();
+    }
   }
 
   private applyApplicationConfig(config: ApplicationContext["config"]["current"]) {
@@ -605,6 +635,9 @@ export class ChatPage extends LitElement {
       return html`<main class="app-shell app-shell--booting" aria-busy="true"></main>`;
     }
     const currentAgentId = resolveChatAgentId(state);
+    const agentDefaultModel = this.context.agents.state.agentsList?.agents.find(
+      (agent) => agent.id === currentAgentId,
+    )?.model?.primary;
     const selectedSessionArchived =
       state.selectedChatSessionArchived ||
       state.sessionsResult?.sessions.some(
@@ -615,6 +648,9 @@ export class ChatPage extends LitElement {
       : selectedSessionArchived
         ? t("chat.archivedSessionDisabled")
         : null;
+    const canOpenRealtimeTalkSettings = hasOperatorAdminAccess(
+      this.context.gateway.snapshot.hello?.auth ?? null,
+    );
     const props: ChatProps = {
       sessionKey: state.sessionKey,
       onSessionKeyChange: (next) => {
@@ -639,6 +675,7 @@ export class ChatPage extends LitElement {
       stream: state.chatStream,
       streamStartedAt: state.chatStreamStartedAt,
       assistantAvatarUrl: resolveChatAvatarUrl(state),
+      sendShortcut: state.settings.chatSendShortcut,
       draft: state.chatMessage,
       queue: state.chatQueue,
       realtimeTalkActive: state.realtimeTalkActive,
@@ -647,8 +684,8 @@ export class ChatPage extends LitElement {
       realtimeTalkTranscript: state.realtimeTalkTranscript,
       realtimeTalkConversation: state.realtimeTalkConversation,
       realtimeTalkOptionsOpen: state.realtimeTalkOptionsOpen,
-      realtimeTalkCatalogProviders: state.realtimeTalkCatalogProviders,
       realtimeTalkOptions: state.realtimeTalkOptions,
+      canOpenRealtimeTalkSettings,
       connected: state.connected,
       canSend: state.connected && !selectedSessionArchived,
       disabledReason,
@@ -662,6 +699,7 @@ export class ChatPage extends LitElement {
         manualRefreshInFlight: state.chatManualRefreshInFlight,
         model: {
           activeRunId: state.chatRunId,
+          agentDefaultModel,
           connected: state.connected,
           gatewayAvailable: Boolean(state.client),
           loading: state.chatLoading,
@@ -728,12 +766,16 @@ export class ChatPage extends LitElement {
       onToggleRealtimeTalk: () => void state.toggleRealtimeTalk(),
       onToggleRealtimeTalkOptions: () => {
         state.realtimeTalkOptionsOpen = !state.realtimeTalkOptionsOpen;
-        if (state.realtimeTalkOptionsOpen) {
-          void state.fetchRealtimeTalkCatalog();
-        }
         state.requestUpdate?.();
       },
       onRealtimeTalkOptionsChange: state.updateRealtimeTalkOptions,
+      onOpenRealtimeTalkSettings: () => {
+        if (!canOpenRealtimeTalkSettings) {
+          return;
+        }
+        state.realtimeTalkOptionsOpen = false;
+        this.context.navigate("communications", { search: "?section=talk" });
+      },
       onDismissError: () => {
         dismissChatError(state as never);
         state.requestUpdate?.();
@@ -746,6 +788,7 @@ export class ChatPage extends LitElement {
       onQueueRemove: state.removeQueuedMessage,
       onQueueRetry: (id) => void state.retryQueuedChatMessage(id),
       onQueueSteer: (id) => void state.steerQueuedChatMessage(id),
+      onGoalCommand: (command) => void state.handleSendChat(command),
       onDismissSideResult: () => {
         state.chatSideResult = null;
         state.requestUpdate?.();

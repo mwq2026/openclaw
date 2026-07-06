@@ -11,7 +11,13 @@ import type {
 import { subtitleForRoute, titleForRoute } from "../../app-navigation.ts";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
 import { hasOperatorWriteAccess } from "../../app/operator-access.ts";
+import { t } from "../../i18n/index.ts";
 import { isPluginEnabledInConfigSnapshot } from "../../lib/plugin-activation.ts";
+import {
+  loadStoredSessionCustomGroups,
+  saveStoredSessionCustomGroups,
+} from "../../lib/sessions/custom-groups.ts";
+import { normalizeSessionsGroupBy, type SessionsGroupBy } from "../../lib/sessions/grouping.ts";
 import {
   filterSessionRows,
   scopedAgentParamsForSession,
@@ -24,7 +30,14 @@ import {
   resolveUiConfiguredMainKey,
 } from "../../lib/sessions/session-key.ts";
 import { captureSessionToWorkboard } from "../../lib/workboard/index.ts";
+import { getSafeLocalStorage } from "../../local-storage.ts";
 import { renderSessions, type SessionsProps } from "./view.ts";
+
+const GROUP_BY_STORAGE_KEY = "openclaw:sessions:group-by";
+
+function loadStoredGroupBy(): SessionsGroupBy {
+  return normalizeSessionsGroupBy(getSafeLocalStorage()?.getItem(GROUP_BY_STORAGE_KEY));
+}
 
 export type SessionsRouteData = {
   client: GatewayBrowserClient | null;
@@ -40,7 +53,7 @@ function parseFilterInteger(value: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-export class SessionsPage extends LitElement {
+class SessionsPage extends LitElement {
   @consume({ context: applicationContext, subscribe: false })
   private context?: ApplicationContext;
 
@@ -58,6 +71,8 @@ export class SessionsPage extends LitElement {
   @state() private searchQuery = "";
   @state() private sortColumn: "key" | "kind" | "updated" | "tokens" = "updated";
   @state() private sortDir: "asc" | "desc" = "desc";
+  @state() private groupBy: SessionsGroupBy = loadStoredGroupBy();
+  @state() private customGroups: string[] = loadStoredSessionCustomGroups();
   @state() private page = 0;
   @state() private pageSize = 25;
   @state() private selectedKeys = new Set<string>();
@@ -484,6 +499,59 @@ export class SessionsPage extends LitElement {
     }
   }
 
+  private knownCategories(): string[] {
+    const fromRows = (this.result?.sessions ?? [])
+      .map((row) => row.category?.trim())
+      .filter((name): name is string => Boolean(name));
+    return [...new Set([...this.customGroups, ...fromRows.toSorted((a, b) => a.localeCompare(b))])];
+  }
+
+  private setGroupBy(mode: SessionsGroupBy) {
+    this.groupBy = mode;
+    try {
+      getSafeLocalStorage()?.setItem(GROUP_BY_STORAGE_KEY, mode);
+    } catch {
+      // ignore storage failures
+    }
+  }
+
+  private rememberCustomGroup(name: string) {
+    if (!this.customGroups.includes(name)) {
+      this.customGroups = [...this.customGroups, name];
+      saveStoredSessionCustomGroups(this.customGroups);
+    }
+  }
+
+  private assignCategory(key: string, category: string | null) {
+    // Only patch keys that exist in the current result; sessions.patch would
+    // otherwise create a store entry for arbitrary dropped text.
+    const session = this.result?.sessions.find((row) => row.key === key);
+    if (!session) {
+      return;
+    }
+    // Dropping a row onto its own section is a no-op; skip the patch round-trip.
+    const current = session.category?.trim() || null;
+    if (current === category) {
+      return;
+    }
+    if (category) {
+      this.rememberCustomGroup(category);
+    }
+    void this.patchSession(key, { category });
+  }
+
+  private requestNewCategory(sessionKey?: string) {
+    const raw = window.prompt(t("sessionsView.newGroupPrompt"));
+    const name = raw?.trim();
+    if (!name) {
+      return;
+    }
+    this.rememberCustomGroup(name);
+    if (sessionKey) {
+      void this.patchSession(sessionKey, { category: name });
+    }
+  }
+
   private async patchSession(key: string, patch: Parameters<SessionsProps["onPatch"]>[1]) {
     const context = this.context;
     if (!context) {
@@ -519,6 +587,24 @@ export class SessionsPage extends LitElement {
       }
     } catch (error) {
       this.error = String(error);
+    }
+  }
+
+  private async forkSession(key: string) {
+    const context = this.context;
+    if (!context) {
+      return;
+    }
+    const agentId = this.sessionAgentId(key);
+    const forkedKey = await context.sessions.create({
+      parentSessionKey: key,
+      fork: true,
+      ...(agentId ? { agentId } : {}),
+    });
+    if (forkedKey) {
+      context.navigate("chat", { search: searchForSession(forkedKey), hash: "" });
+    } else if (context.sessions.state.error) {
+      this.error = context.sessions.state.error;
     }
   }
 
@@ -658,6 +744,8 @@ export class SessionsPage extends LitElement {
         agentIdentityById: this.sessionAgentIdentityById(this.result),
         sortColumn: this.sortColumn,
         sortDir: this.sortDir,
+        groupBy: this.groupBy,
+        knownCategories: this.knownCategories(),
         page: this.page,
         pageSize: this.pageSize,
         selectedKeys: this.selectedKeys,
@@ -696,6 +784,9 @@ export class SessionsPage extends LitElement {
           this.sortDir = direction;
           this.page = 0;
         },
+        onGroupByChange: (mode) => this.setGroupBy(mode),
+        onAssignCategory: (key, category) => this.assignCategory(key, category),
+        onRequestNewCategory: (sessionKey) => this.requestNewCategory(sessionKey),
         onPageChange: (page) => {
           this.page = page;
         },
@@ -730,6 +821,7 @@ export class SessionsPage extends LitElement {
         onDeleteSelected: () => void this.deleteSelected(),
         onNavigateToChat: (sessionKey) =>
           context.navigate("chat", { search: searchForSession(sessionKey), hash: "" }),
+        onFork: (sessionKey) => this.forkSession(sessionKey),
         onAddToWorkboard: canCapture
           ? (session: GatewaySessionRow) => this.addToWorkboard(session)
           : undefined,

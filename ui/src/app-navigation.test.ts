@@ -7,10 +7,10 @@ import {
   subtitleForRoute,
   titleForRoute,
 } from "./app-navigation.ts";
+import { normalizePath } from "./app-route-paths.ts";
 import {
   inferBasePathFromPathname,
   normalizeBasePath,
-  normalizePath,
   pathForRoute,
   routeIdFromPath,
   type RouteId,
@@ -35,7 +35,7 @@ describe("navigationIconForRoute", () => {
       chat: "messageSquare",
       overview: "barChart",
       activity: "activity",
-      workboard: "folder",
+      workboard: "kanban",
       worktrees: "folder",
       channels: "link",
       instances: "radio",
@@ -43,7 +43,7 @@ describe("navigationIconForRoute", () => {
       usage: "barChart",
       cron: "loader",
       tasks: "loader",
-      agents: "folder",
+      agents: "bot",
       skills: "zap",
       "skill-workshop": "wrench",
       nodes: "monitor",
@@ -286,6 +286,7 @@ describe("SIDEBAR_NAV_ROUTES", () => {
       "automation",
       "mcp",
       "infrastructure",
+      "worktrees",
       "ai-agents",
       "debug",
       "logs",

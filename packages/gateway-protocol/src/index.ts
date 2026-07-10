@@ -219,6 +219,8 @@ import {
   type DevicePairSetupCodeParams,
   DevicePairSetupCodeParamsSchema,
   type DevicePairSetupCodeResult,
+  type DevicePairRenameParams,
+  DevicePairRenameParamsSchema,
   type DeviceTokenRevokeParams,
   DeviceTokenRevokeParamsSchema,
   type DeviceTokenRotateParams,
@@ -244,14 +246,39 @@ import {
   PluginApprovalRequestParamsSchema,
   type PluginApprovalResolveParams,
   PluginApprovalResolveParamsSchema,
+  type PluginCatalogEntry,
+  PluginCatalogEntrySchema,
+  PluginCatalogInstallActionSchema,
+  PluginSearchPackageSchema,
+  PluginSearchResultEntrySchema,
+  type PluginsInstallParams,
+  type PluginsInstallResult,
+  PluginsInstallParamsSchema,
+  PluginsInstallResultSchema,
+  type PluginsListParams,
+  type PluginsListResult,
+  PluginsListParamsSchema,
+  PluginsListResultSchema,
+  type PluginsSearchParams,
+  type PluginsSearchResult,
+  PluginsSearchParamsSchema,
+  PluginsSearchResultSchema,
   type PluginsSessionActionParams,
   type PluginsSessionActionResult,
   PluginsSessionActionParamsSchema,
   PluginsSessionActionResultSchema,
+  type PluginsSetEnabledParams,
+  type PluginsSetEnabledResult,
+  PluginsSetEnabledParamsSchema,
+  PluginsSetEnabledResultSchema,
   type PluginsUiDescriptorsParams,
   type PluginsUiDescriptorsResult,
   PluginsUiDescriptorsParamsSchema,
   PluginsUiDescriptorsResultSchema,
+  type PluginsUninstallParams,
+  type PluginsUninstallResult,
+  PluginsUninstallParamsSchema,
+  PluginsUninstallResultSchema,
   ErrorCodes,
   type EnvironmentSummary,
   EnvironmentSummarySchema,
@@ -349,10 +376,6 @@ import {
   NodePairRejectParamsSchema,
   type NodePairRemoveParams,
   NodePairRemoveParamsSchema,
-  type NodePairRequestParams,
-  NodePairRequestParamsSchema,
-  type NodePairVerifyParams,
-  NodePairVerifyParamsSchema,
   type NodeRenameParams,
   NodeRenameParamsSchema,
   type PollParams,
@@ -735,9 +758,6 @@ export const validateArtifactsGetParams = lazyCompile<ArtifactsGetParams>(Artifa
 export const validateArtifactsDownloadParams = lazyCompile<ArtifactsDownloadParams>(
   ArtifactsDownloadParamsSchema,
 );
-export const validateNodePairRequestParams = lazyCompile<NodePairRequestParams>(
-  NodePairRequestParamsSchema,
-);
 export const validateNodePairListParams = lazyCompile<NodePairListParams>(NodePairListParamsSchema);
 export const validateNodePairApproveParams = lazyCompile<NodePairApproveParams>(
   NodePairApproveParamsSchema,
@@ -747,9 +767,6 @@ export const validateNodePairRejectParams = lazyCompile<NodePairRejectParams>(
 );
 export const validateNodePairRemoveParams = lazyCompile<NodePairRemoveParams>(
   NodePairRemoveParamsSchema,
-);
-export const validateNodePairVerifyParams = lazyCompile<NodePairVerifyParams>(
-  NodePairVerifyParamsSchema,
 );
 export const validateNodeRenameParams = lazyCompile<NodeRenameParams>(NodeRenameParamsSchema);
 export const validateNodeListParams = lazyCompile<NodeListParams>(NodeListParamsSchema);
@@ -1044,6 +1061,9 @@ export const validateDevicePairRemoveParams = lazyCompile<DevicePairRemoveParams
 export const validateDevicePairSetupCodeParams = lazyCompile<DevicePairSetupCodeParams>(
   DevicePairSetupCodeParamsSchema,
 );
+export const validateDevicePairRenameParams = lazyCompile<DevicePairRenameParams>(
+  DevicePairRenameParamsSchema,
+);
 export const validateDeviceTokenRotateParams = lazyCompile<DeviceTokenRotateParams>(
   DeviceTokenRotateParamsSchema,
 );
@@ -1070,6 +1090,30 @@ export const validatePluginApprovalRequestParams = lazyCompile<PluginApprovalReq
 );
 export const validatePluginApprovalResolveParams = lazyCompile<PluginApprovalResolveParams>(
   PluginApprovalResolveParamsSchema,
+);
+export const validatePluginsListParams = lazyCompile<PluginsListParams>(PluginsListParamsSchema);
+export const validatePluginsListResult = lazyCompile<PluginsListResult>(PluginsListResultSchema);
+export const validatePluginsSearchParams =
+  lazyCompile<PluginsSearchParams>(PluginsSearchParamsSchema);
+export const validatePluginsSearchResult =
+  lazyCompile<PluginsSearchResult>(PluginsSearchResultSchema);
+export const validatePluginsInstallParams = lazyCompile<PluginsInstallParams>(
+  PluginsInstallParamsSchema,
+);
+export const validatePluginsInstallResult = lazyCompile<PluginsInstallResult>(
+  PluginsInstallResultSchema,
+);
+export const validatePluginsSetEnabledParams = lazyCompile<PluginsSetEnabledParams>(
+  PluginsSetEnabledParamsSchema,
+);
+export const validatePluginsSetEnabledResult = lazyCompile<PluginsSetEnabledResult>(
+  PluginsSetEnabledResultSchema,
+);
+export const validatePluginsUninstallParams = lazyCompile<PluginsUninstallParams>(
+  PluginsUninstallParamsSchema,
+);
+export const validatePluginsUninstallResult = lazyCompile<PluginsUninstallResult>(
+  PluginsUninstallResultSchema,
 );
 export const validatePluginsUiDescriptorsParams = lazyCompile<PluginsUiDescriptorsParams>(
   PluginsUiDescriptorsParamsSchema,
@@ -1224,12 +1268,10 @@ export {
   WebPushSubscribeParamsSchema,
   WebPushUnsubscribeParamsSchema,
   WebPushTestParamsSchema,
-  NodePairRequestParamsSchema,
   NodePairListParamsSchema,
   NodePairApproveParamsSchema,
   NodePairRejectParamsSchema,
   NodePairRemoveParamsSchema,
-  NodePairVerifyParamsSchema,
   NodeListParamsSchema,
   NodePendingAckParamsSchema,
   NodeInvokeParamsSchema,
@@ -1376,10 +1418,24 @@ export {
   AgentsListResultSchema,
   CommandsListParamsSchema,
   CommandsListResultSchema,
+  PluginCatalogEntrySchema,
+  PluginCatalogInstallActionSchema,
+  PluginSearchPackageSchema,
+  PluginSearchResultEntrySchema,
+  PluginsInstallParamsSchema,
+  PluginsInstallResultSchema,
+  PluginsListParamsSchema,
+  PluginsListResultSchema,
+  PluginsSearchParamsSchema,
+  PluginsSearchResultSchema,
   PluginsSessionActionParamsSchema,
   PluginsSessionActionResultSchema,
+  PluginsSetEnabledParamsSchema,
+  PluginsSetEnabledResultSchema,
   PluginsUiDescriptorsParamsSchema,
   PluginsUiDescriptorsResultSchema,
+  PluginsUninstallParamsSchema,
+  PluginsUninstallResultSchema,
   ModelsListParamsSchema,
   SkillsStatusParamsSchema,
   ToolsCatalogParamsSchema,
@@ -1492,7 +1548,6 @@ export type {
   TickEvent,
   ShutdownEvent,
   WakeParams,
-  NodePairRequestParams,
   NodePairListParams,
   NodePairApproveParams,
   DevicePairListParams,
@@ -1500,6 +1555,7 @@ export type {
   DevicePairRejectParams,
   DevicePairSetupCodeParams,
   DevicePairSetupCodeResult,
+  DevicePairRenameParams,
   ConfigGetParams,
   ConfigSetParams,
   ConfigApplyParams,
@@ -1597,8 +1653,19 @@ export type {
   CommandsListParams,
   CommandsListResult,
   CommandEntry,
+  PluginCatalogEntry,
+  PluginsInstallParams,
+  PluginsInstallResult,
+  PluginsListParams,
+  PluginsListResult,
+  PluginsSearchParams,
+  PluginsSearchResult,
   PluginsSessionActionParams,
   PluginsSessionActionResult,
+  PluginsSetEnabledParams,
+  PluginsSetEnabledResult,
+  PluginsUninstallParams,
+  PluginsUninstallResult,
   SkillsStatusParams,
   ToolsCatalogParams,
   ToolsCatalogResult,
@@ -1647,7 +1714,6 @@ export type {
   SystemInfoResult,
   NodePairRejectParams,
   NodePairRemoveParams,
-  NodePairVerifyParams,
   NodeListParams,
   NodeInvokeParams,
   NodeInvokeResultParams,

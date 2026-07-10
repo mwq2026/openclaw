@@ -6,7 +6,6 @@ import type { TaskSuggestion } from "../../../../packages/gateway-protocol/src/i
 import type { SessionsListResult } from "../../api/types.ts";
 import type { ChatSendShortcut } from "../../app/settings.ts";
 import { icons } from "../../components/icons.ts";
-import type { ProviderQuotaPillProps } from "../../components/provider-quota-pill.ts";
 import "../../components/tooltip.ts";
 import { t } from "../../i18n/index.ts";
 import type {
@@ -16,6 +15,7 @@ import type {
 } from "../../lib/chat/chat-types.ts";
 import type { ChatSideResult } from "../../lib/chat/side-result.ts";
 import type { EmbedSandboxMode } from "../../lib/chat/tool-display.ts";
+import type { ProviderUsageDisplayProps } from "../../lib/provider-quota-summary.ts";
 import {
   handleChatAttachmentDrop,
   renderChatComposer,
@@ -23,6 +23,7 @@ import {
 } from "./components/chat-composer.ts";
 import {
   renderSessionWorkspaceRail,
+  renderSessionWorkspaceToggle,
   type SessionWorkspaceProps,
 } from "./components/chat-session-workspace.ts";
 import type {
@@ -80,7 +81,7 @@ export type ChatProps = {
   disabledReason: string | null;
   error: string | null;
   sessions: SessionsListResult | null;
-  providerQuota?: ProviderQuotaPillProps;
+  providerUsage?: ProviderUsageDisplayProps;
   focusMode?: boolean;
   onLoadSidebarFullMessage?: (
     request: SidebarFullMessageRequest,
@@ -147,6 +148,9 @@ export type ChatProps = {
   onClearReply?: () => void;
   onSetReply?: (target: { messageId: string; text: string; senderLabel?: string | null }) => void;
   sessionWorkspace?: SessionWorkspaceProps;
+  /** True when a split pane header hosts the workspace toggle; suppresses the
+   * single-pane floating opener so only one affordance renders. */
+  paneHeaderActive?: boolean;
   taskSuggestions?: TaskSuggestion[];
   taskSuggestionBusyIds?: ReadonlySet<string>;
   canAcceptTaskSuggestions?: boolean;
@@ -228,7 +232,7 @@ export function renderChat(props: ChatProps) {
     queue: props.queue,
     draft: props.draft,
     sessions: props.sessions,
-    providerQuota: props.providerQuota,
+    providerUsage: props.providerUsage,
     assistantName: props.assistantName,
     sendShortcut: props.sendShortcut,
     attachments: props.attachments,
@@ -345,9 +349,34 @@ export function renderChat(props: ChatProps) {
       <div
         class="chat-workbench ${props.sessionWorkspace?.collapsed
           ? "chat-workbench--workspace-collapsed"
-          : ""}"
+          : ""} ${props.sessionWorkspace?.dock === "bottom" ? "chat-workbench--dock-bottom" : ""}"
       >
         ${renderSessionWorkspaceRail(props.sessionWorkspace)}
+        ${props.sessionWorkspace?.collapsed && !props.paneHeaderActive
+          ? renderSessionWorkspaceToggle(props.sessionWorkspace, "floating")
+          : nothing}
+        ${props.sessionWorkspace?.dockDragging
+          ? html`
+              <div class="chat-workbench__dock-zones" aria-hidden="true">
+                <div
+                  class="chat-workbench__dock-zone chat-workbench__dock-zone--right ${props
+                    .sessionWorkspace.dockDragZone === "right"
+                    ? "chat-workbench__dock-zone--active"
+                    : ""}"
+                >
+                  <span>${t("chat.workspaceFiles.dockRight")}</span>
+                </div>
+                <div
+                  class="chat-workbench__dock-zone chat-workbench__dock-zone--bottom ${props
+                    .sessionWorkspace.dockDragZone === "bottom"
+                    ? "chat-workbench__dock-zone--active"
+                    : ""}"
+                >
+                  <span>${t("chat.workspaceFiles.dockBottom")}</span>
+                </div>
+              </div>
+            `
+          : nothing}
         <div class="chat-workbench__main">
           <div class="chat-split-container ${sidebarOpen ? "chat-split-container--open" : ""}">
             <div

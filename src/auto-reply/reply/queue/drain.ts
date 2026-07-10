@@ -15,6 +15,7 @@ import {
   createUserTurnTranscriptRecorder,
 } from "../../../sessions/user-turn-transcript.js";
 import { resolveGlobalMap } from "../../../shared/global-singleton.js";
+import { normalizeMessageChannel } from "../../../utils/message-channel.js";
 import {
   buildCollectPrompt,
   beginQueueDrain,
@@ -174,9 +175,22 @@ export function resolveFollowupDeliveryContextKey(run: FollowupRun): string {
 }
 
 export function resolveFollowupReplyAnchor(run: FollowupRun): string | undefined {
-  return run.originatingReplyToMode === "off"
-    ? undefined
-    : normalizeOptionalString(run.originatingReplyToId);
+  if (run.originatingReplyToMode === "off") {
+    return undefined;
+  }
+  const replyToId = normalizeOptionalString(run.originatingReplyToId);
+  if (replyToId || normalizeMessageChannel(run.originatingChannel) !== "slack") {
+    return replyToId;
+  }
+  const threadId = run.originatingThreadId;
+  const hasRoutedThread =
+    typeof threadId === "number"
+      ? Number.isFinite(threadId)
+      : normalizeOptionalString(threadId) !== undefined;
+  // Slack standalone turns have no parent reply id, but enabled reply policies
+  // still need the message id so collect groups cannot cross independent roots.
+  // A routed thread already owns that boundary and remains collectable across turns.
+  return hasRoutedThread ? undefined : normalizeOptionalString(run.messageId);
 }
 
 function splitCollectItemsByDeliveryContext(items: FollowupRun[]): FollowupRun[][] {
@@ -371,6 +385,10 @@ function resolveAggregateOwner(items: readonly FollowupRun[]): FollowupRun | und
     items.findLast((item) => item.queuedLifecycle) ??
     items.at(-1)
   );
+}
+
+function requiresIndividualCollectDrain(item: FollowupRun): boolean {
+  return item.disableCollectBatching === true || hasRuntimeOnlyFollowupMetadata(item);
 }
 
 type AggregateCancellation = {
@@ -799,6 +817,19 @@ function resolveOverflowSummarySourceGroup(queue: {
   return sources;
 }
 
+async function drainProtectedPriorityFollowup(
+  items: FollowupRun[],
+  runFollowup: (run: FollowupRun) => Promise<void>,
+): Promise<boolean> {
+  const priority = items.find((item) => item.protectFromQueueOverflow === true);
+  if (!priority) {
+    return false;
+  }
+  await runFollowup(priority);
+  removeQueuedItemsByRef(items, [priority]);
+  return true;
+}
+
 export function createOverflowSummaryRetrySource(source: FollowupRun): FollowupRun {
   return {
     prompt: source.prompt,
@@ -1064,6 +1095,9 @@ export function scheduleFollowupDrain(
         if (queue.items.length === 0 && queue.droppedCount === 0) {
           break;
         }
+        if (await drainProtectedPriorityFollowup(queue.items, effectiveRunFollowup)) {
+          continue;
+        }
         if (
           queue.droppedCount > 0 &&
           (await drainOverflowSummaryGroup({
@@ -1082,7 +1116,7 @@ export function scheduleFollowupDrain(
           // If so, process individually to preserve per-message routing.
           const isCrossChannel =
             hasCrossChannelItems(queue.items, resolveCrossChannelKey) ||
-            queue.items.some(hasRuntimeOnlyFollowupMetadata);
+            queue.items.some(requiresIndividualCollectDrain);
           if (collectState.forceIndividualCollect && !isCrossChannel && queue.items.length > 1) {
             collectState.forceIndividualCollect = false;
           }
@@ -1092,6 +1126,7 @@ export function scheduleFollowupDrain(
             isCrossChannel,
             items: queue.items,
             run: effectiveRunFollowup,
+            inFlight: queue.inFlight,
           });
           if (collectDrainResult === "empty") {
             break;
@@ -1180,6 +1215,11 @@ export function scheduleFollowupDrain(
               });
             };
             try {
+              // Mark active group items as in-flight so the drop policy does not
+              // select them as overflow victims while the group drain is awaited.
+              for (const item of activeGroupItems) {
+                queue.inFlight.add(item);
+              }
               await drainGroup();
             } catch (err) {
               if (admitted) {
@@ -1187,6 +1227,9 @@ export function scheduleFollowupDrain(
               }
               throw err;
             } finally {
+              for (const item of activeGroupItems) {
+                queue.inFlight.delete(item);
+              }
               cancellation.dispose();
             }
             if (!admitted) {
@@ -1204,7 +1247,7 @@ export function scheduleFollowupDrain(
           continue;
         }
 
-        if (!(await drainNextQueueItem(queue.items, effectiveRunFollowup))) {
+        if (!(await drainNextQueueItem(queue.items, effectiveRunFollowup, queue.inFlight))) {
           break;
         }
       }

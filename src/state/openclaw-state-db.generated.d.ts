@@ -785,6 +785,12 @@ export interface SchemaMeta {
   updated_at: number;
 }
 
+export interface SessionGroups {
+  created_at: number;
+  name: string;
+  position: number;
+}
+
 export interface SkillCuratorState {
   id: Generated<number>;
   last_attempt_at_ms: number;
@@ -995,6 +1001,27 @@ export interface WebPushVapidKeys {
   updated_at_ms: number;
 }
 
+export interface WorkerEnvironments {
+  attached_session_ids_json: Generated<string>;
+  created_at_ms: number;
+  destroy_requested_at_ms: number | null;
+  environment_id: string;
+  idle_since_at_ms: number | null;
+  last_error: string | null;
+  lease_id: string | null;
+  profile_id: string;
+  profile_snapshot_json: string;
+  provider_id: string;
+  provision_operation_id: string;
+  ssh_host: string | null;
+  ssh_key_ref_json: string | null;
+  ssh_port: number | null;
+  ssh_user: string | null;
+  state: string;
+  state_changed_at_ms: number;
+  updated_at_ms: number;
+}
+
 export interface WorkspaceSetupState {
   bootstrap_seeded_at: string | null;
   setup_completed_at: string | null;
@@ -1074,6 +1101,7 @@ export interface DB {
   plugin_state_entries: PluginStateEntries;
   sandbox_registry_entries: SandboxRegistryEntries;
   schema_meta: SchemaMeta;
+  session_groups: SessionGroups;
   skill_curator_state: SkillCuratorState;
   skill_lifecycle: SkillLifecycle;
   skill_uploads: SkillUploads;
@@ -1089,6 +1117,7 @@ export interface DB {
   voicewake_triggers: VoicewakeTriggers;
   web_push_subscriptions: WebPushSubscriptions;
   web_push_vapid_keys: WebPushVapidKeys;
+  worker_environments: WorkerEnvironments;
   workspace_setup_state: WorkspaceSetupState;
   worktrees: Worktrees;
 }

@@ -1324,4 +1324,54 @@ CREATE INDEX IF NOT EXISTS idx_worktrees_repo_fingerprint
   ON worktrees(repo_fingerprint);
 
 CREATE INDEX IF NOT EXISTS idx_worktrees_removed_at
-  ON worktrees(removed_at);\n`;
+  ON worktrees(removed_at);
+
+-- Gateway-owned custom session group catalog (names + display order).
+-- Membership stays on each session entry's category field; this table only
+-- owns which groups exist and how operator UIs order them.
+CREATE TABLE IF NOT EXISTS session_groups (
+  name TEXT NOT NULL PRIMARY KEY,
+  position INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+-- Gateway-owned durable cloud worker lifecycle. Provider-specific execution
+-- stays in plugins; this table records only core reconciliation facts.
+CREATE TABLE IF NOT EXISTS worker_environments (
+  environment_id TEXT NOT NULL PRIMARY KEY,
+  provider_id TEXT NOT NULL,
+  profile_id TEXT NOT NULL,
+  profile_snapshot_json TEXT NOT NULL,
+  provision_operation_id TEXT NOT NULL UNIQUE,
+  lease_id TEXT,
+  ssh_host TEXT,
+  ssh_port INTEGER CHECK (ssh_port IS NULL OR (ssh_port >= 1 AND ssh_port <= 65535)),
+  ssh_user TEXT,
+  ssh_key_ref_json TEXT,
+  state TEXT NOT NULL CHECK (
+    state IN (
+      'requested',
+      'provisioning',
+      'bootstrapping',
+      'ready',
+      'attached',
+      'idle',
+      'draining',
+      'destroying',
+      'destroyed',
+      'failed',
+      'orphaned'
+    )
+  ),
+  attached_session_ids_json TEXT NOT NULL DEFAULT '[]',
+  created_at_ms INTEGER NOT NULL,
+  updated_at_ms INTEGER NOT NULL,
+  state_changed_at_ms INTEGER NOT NULL,
+  idle_since_at_ms INTEGER,
+  destroy_requested_at_ms INTEGER,
+  last_error TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_environments_provider_lease
+  ON worker_environments(provider_id, lease_id)
+  WHERE lease_id IS NOT NULL;\n`;

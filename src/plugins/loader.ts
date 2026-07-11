@@ -476,6 +476,7 @@ type PluginRegistrySnapshot = {
     musicGenerationProviders: PluginRegistry["musicGenerationProviders"];
     webFetchProviders: PluginRegistry["webFetchProviders"];
     webSearchProviders: PluginRegistry["webSearchProviders"];
+    workerProviders: PluginRegistry["workerProviders"];
     migrationProviders: PluginRegistry["migrationProviders"];
     codexAppServerExtensionFactories: PluginRegistry["codexAppServerExtensionFactories"];
     agentToolResultMiddlewares: PluginRegistry["agentToolResultMiddlewares"];
@@ -523,6 +524,7 @@ function snapshotPluginRegistry(registry: PluginRegistry): PluginRegistrySnapsho
       musicGenerationProviders: [...registry.musicGenerationProviders],
       webFetchProviders: [...registry.webFetchProviders],
       webSearchProviders: [...registry.webSearchProviders],
+      workerProviders: new Map(registry.workerProviders),
       migrationProviders: [...registry.migrationProviders],
       codexAppServerExtensionFactories: [...registry.codexAppServerExtensionFactories],
       agentToolResultMiddlewares: [...registry.agentToolResultMiddlewares],
@@ -569,6 +571,7 @@ function restorePluginRegistry(registry: PluginRegistry, snapshot: PluginRegistr
   registry.musicGenerationProviders = snapshot.arrays.musicGenerationProviders;
   registry.webFetchProviders = snapshot.arrays.webFetchProviders;
   registry.webSearchProviders = snapshot.arrays.webSearchProviders;
+  registry.workerProviders = snapshot.arrays.workerProviders;
   registry.migrationProviders = snapshot.arrays.migrationProviders;
   registry.codexAppServerExtensionFactories = snapshot.arrays.codexAppServerExtensionFactories;
   registry.agentToolResultMiddlewares = snapshot.arrays.agentToolResultMiddlewares;
@@ -2049,6 +2052,11 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       allow: normalized.allow,
       warningCacheKey: cacheKey,
       warningCache: pluginLoaderCacheState,
+      explicitlyEnabledPluginIds: new Set(
+        Object.entries(normalized.entries)
+          .filter(([, entry]) => entry.enabled === true)
+          .map(([pluginId]) => pluginId),
+      ),
       // Keep warning input scoped as well so partial snapshot loads only mention the
       // plugins that were intentionally requested for this registry.
       discoverablePlugins: manifestRegistry.plugins
@@ -3039,6 +3047,11 @@ export async function loadOpenClawPluginCliRegistry(
     allow: normalized.allow,
     warningCacheKey: `${cacheKey}::cli-metadata`,
     warningCache: pluginLoaderCacheState,
+    explicitlyEnabledPluginIds: new Set(
+      Object.entries(normalized.entries)
+        .filter(([, entry]) => entry.enabled === true)
+        .map(([pluginId]) => pluginId),
+    ),
     discoverablePlugins: manifestRegistry.plugins
       .filter((plugin) => !onlyPluginIdSet || onlyPluginIdSet.has(plugin.id))
       .map((plugin) => ({

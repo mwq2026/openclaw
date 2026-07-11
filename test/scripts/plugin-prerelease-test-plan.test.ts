@@ -287,7 +287,7 @@ describe("scripts/lib/plugin-prerelease-test-plan.mjs", () => {
           with: {
             "fetch-depth": 1,
             "fetch-tags": false,
-            "persist-credentials": true,
+            "persist-credentials": false,
             ref: "${{ needs.preflight.outputs.checkout_revision }}",
             submodules: false,
           },
@@ -327,6 +327,12 @@ describe("scripts/lib/plugin-prerelease-test-plan.mjs", () => {
       required: false,
       type: "boolean",
     });
+    expect(workflow.on.workflow_dispatch.inputs.historical_target_tag).toEqual({
+      default: "",
+      description: "Semver release tag authorizing compatibility fallbacks for its exact commit",
+      required: false,
+      type: "string",
+    });
     expect(manifestEnv).toEqual({
       OPENCLAW_CI_CHECKOUT_REVISION: "${{ steps.checkout_ref.outputs.sha }}",
       OPENCLAW_CI_DOCS_CHANGED:
@@ -334,6 +340,7 @@ describe("scripts/lib/plugin-prerelease-test-plan.mjs", () => {
       OPENCLAW_CI_DOCS_ONLY:
         "${{ github.event_name == 'workflow_dispatch' && 'false' || steps.docs_scope.outputs.docs_only }}",
       OPENCLAW_CI_EVENT_NAME: "${{ github.event_name }}",
+      OPENCLAW_CI_HISTORICAL_TARGET: "${{ steps.historical_target.outputs.eligible || 'false' }}",
       OPENCLAW_CI_REPOSITORY: "${{ github.repository }}",
       OPENCLAW_CI_RUN_ANDROID:
         "${{ github.event_name == 'workflow_dispatch' && (inputs.release_gate || inputs.include_android) && 'true' || steps.changed_scope.outputs.run_android || 'false' }}",
@@ -355,8 +362,11 @@ describe("scripts/lib/plugin-prerelease-test-plan.mjs", () => {
         "${{ github.event_name == 'workflow_dispatch' && 'false' || steps.changed_scope.outputs.run_node_fast_plugin_contracts || 'false' }}",
       OPENCLAW_CI_RUN_SKILLS_PYTHON:
         "${{ github.event_name == 'workflow_dispatch' && 'true' || steps.changed_scope.outputs.run_skills_python || 'false' }}",
+      OPENCLAW_CI_RUN_UI_TESTS:
+        "${{ github.event_name == 'workflow_dispatch' && 'true' || steps.changed_scope.outputs.run_ui_tests || 'false' }}",
       OPENCLAW_CI_RUN_WINDOWS:
         "${{ github.event_name == 'workflow_dispatch' && 'true' || steps.changed_scope.outputs.run_windows || 'false' }}",
+      OPENCLAW_CI_WORKFLOW_REVISION: "${{ github.sha }}",
     });
     expect(manifestEnv).not.toHaveProperty("OPENCLAW_CI_FULL_RELEASE_VALIDATION");
     expect(manifestScript).toContain("includeReleaseOnlyPluginShards: false");
@@ -373,9 +383,8 @@ describe("scripts/lib/plugin-prerelease-test-plan.mjs", () => {
     expect(
       workflow.jobs["check-shard"].steps.find((step) => step.name === "Run check shard").run,
     ).toContain("pnpm deadcode:ci");
-    expect(normalCiScript).toContain(
-      'dispatch_and_wait ci.yml "$dispatch_run_name" -f target_ref="$TARGET_SHA" -f include_android=true -f dispatch_id="$dispatch_id"',
-    );
+    expect(normalCiScript).toContain('args+=(-f historical_target_tag="$TARGET_REF")');
+    expect(normalCiScript).toContain('dispatch_and_wait ci.yml "$dispatch_run_name" "${args[@]}"');
     expect(normalCiScript).not.toContain("full_release_validation=true");
     expect(pluginPrereleaseScript).toContain(
       'dispatch_and_wait plugin-prerelease.yml "$dispatch_run_name" -f target_ref="$TARGET_SHA" -f expected_sha="$TARGET_SHA" -f full_release_validation=true -f dispatch_id="$dispatch_id"',
@@ -487,7 +496,7 @@ describe("scripts/lib/plugin-prerelease-test-plan.mjs", () => {
       permissions: {
         actions: "read",
         contents: "read",
-        packages: "write",
+        packages: "read",
         "pull-requests": "read",
       },
       uses: "./.github/workflows/openclaw-live-and-e2e-checks-reusable.yml",
@@ -498,7 +507,10 @@ describe("scripts/lib/plugin-prerelease-test-plan.mjs", () => {
         include_release_path_suites: false,
         include_repo_e2e: false,
         live_models_only: false,
+        allow_unreleased_changelog: true,
         ref: "${{ needs.preflight.outputs.checkout_revision }}",
+        shared_image_artifact_namespace: "plugin-prerelease",
+        shared_image_policy: "no-push-artifact",
         targeted_docker_lane_group_size: 4,
       },
     });
@@ -624,8 +636,14 @@ describe("scripts/lib/plugin-prerelease-test-plan.mjs", () => {
     expect(releaseChecksWorkflow.jobs.summary.needs).toContain(
       "runtime_tool_coverage_release_checks",
     );
-    expect(releaseChecksSource).toContain(
-      '"runtime_tool_coverage_release_checks=${{ needs.runtime_tool_coverage_release_checks.result }}"',
+    const verifyStep = releaseChecksWorkflow.jobs.summary.steps.find(
+      (step: { name?: string }) => step.name === "Verify release check results",
+    );
+    expect(verifyStep.env.RUNTIME_TOOL_COVERAGE_RELEASE_CHECKS_RESULT).toBe(
+      "${{ needs.runtime_tool_coverage_release_checks.result }}",
+    );
+    expect(verifyStep.run).toContain(
+      '"runtime_tool_coverage_release_checks=${RUNTIME_TOOL_COVERAGE_RELEASE_CHECKS_RESULT}"',
     );
   });
 

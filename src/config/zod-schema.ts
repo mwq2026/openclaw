@@ -19,6 +19,7 @@ import { ToolsSchema } from "./zod-schema.agent-runtime.js";
 import { AgentsSchema, AudioSchema, BindingsSchema, BroadcastSchema } from "./zod-schema.agents.js";
 import { ApprovalsSchema } from "./zod-schema.approvals.js";
 import { ChannelsSchema } from "./zod-schema.channels-config.js";
+import { CloudWorkersConfigSchema } from "./zod-schema.cloud-workers.js";
 import {
   HexColorSchema,
   ModelsConfigSchema,
@@ -355,7 +356,7 @@ const TalkSchema = z
     providers: z.record(z.string(), TalkProviderEntrySchema).optional(),
     realtime: TalkRealtimeSchema.optional(),
     consultThinkingLevel: z
-      .enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"])
+      .enum(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max", "ultra"])
       .optional(),
     consultFastMode: z.boolean().optional(),
     speechLocale: z.string().optional(),
@@ -417,6 +418,7 @@ const McpServerSchema = z
     auth: z.literal("oauth").optional(),
     oauth: z
       .object({
+        authProfileId: z.string().trim().min(1).optional(),
         scope: z.string().trim().min(1).optional(),
         redirectUrl: HttpUrlSchema.optional(),
         clientMetadataUrl: McpOAuthClientMetadataUrlSchema.optional(),
@@ -783,6 +785,7 @@ export const OpenClawSchema = z
     browser: z
       .object({
         enabled: z.boolean().optional(),
+        allowSystemProfileImport: z.boolean().optional(),
         evaluateEnabled: z.boolean().optional(),
         cdpUrl: z.string().optional(),
         remoteCdpTimeoutMs: z.number().int().nonnegative().optional(),
@@ -1186,6 +1189,7 @@ export const OpenClawSchema = z
             enabled: z.boolean().optional(),
             basePath: z.string().optional(),
             root: z.string().optional(),
+            toolTitles: z.boolean().optional(),
             embedSandbox: z
               .union([z.literal("strict"), z.literal("scripts"), z.literal("trusted")])
               .optional(),
@@ -1395,6 +1399,19 @@ export const OpenClawSchema = z
             pairing: z
               .object({
                 autoApproveCidrs: z.array(z.string()).optional(),
+                sshVerify: z
+                  .union([
+                    z.boolean(),
+                    z
+                      .object({
+                        user: z.string().optional(),
+                        identity: z.string().optional(),
+                        timeoutMs: z.number().int().positive().optional(),
+                        cidrs: z.array(z.string()).optional(),
+                      })
+                      .strict(),
+                  ])
+                  .optional(),
               })
               .strict()
               .optional(),
@@ -1421,6 +1438,7 @@ export const OpenClawSchema = z
         }
       })
       .optional(),
+    cloudWorkers: CloudWorkersConfigSchema,
     memory: MemorySchema,
     mcp: McpConfigSchema,
     skills: z

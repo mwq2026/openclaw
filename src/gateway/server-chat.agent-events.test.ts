@@ -6,7 +6,14 @@ import {
   INTERNAL_RUNTIME_CONTEXT_END,
 } from "../agents/internal-runtime-context.js";
 import { formatChannelProgressDraftLine } from "../channels/streaming.js";
-import { registerAgentRunContext, resetAgentRunContextForTest } from "../infra/agent-events.js";
+import {
+  claimAgentRunContext,
+  emitAgentEventForOwner,
+  onAgentRuntimeEvent,
+  registerAgentRunContext,
+  releaseAgentRunContext,
+  resetAgentRunContextForTest,
+} from "../infra/agent-events.js";
 
 const persistGatewaySessionLifecycleEventMock = vi.fn();
 const logErrorMock = vi.fn();
@@ -57,6 +64,7 @@ import {
   createChatAbortMarker,
   createSessionMessageSubscriberRegistry,
   createToolEventRecipientRegistry,
+  resolveChatErrorKindFromError,
   type AgentEventHandlerOptions,
 } from "./server-chat.js";
 import { loadGatewaySessionRow } from "./server-chat.load-gateway-session-row.runtime.js";
@@ -3826,7 +3834,82 @@ describe("agent event handler", () => {
     ).toHaveLength(0);
   });
 
-  it("adds detected errorKind to chat lifecycle error payloads", () => {
+  it.each([
+    {
+      name: "groq tpm 413",
+      error: new Error("Request too large: too many tokens per minute (TPM)"),
+      expected: "rate_limit",
+    },
+    {
+      name: "quota exceeded",
+      error: new Error("quota exceeded"),
+      expected: "rate_limit",
+    },
+    {
+      name: "resource_exhausted",
+      error: new Error("resource_exhausted"),
+      expected: "rate_limit",
+    },
+    {
+      name: "http 429",
+      error: Object.assign(new Error("Too many requests"), { code: 429 }),
+      expected: "rate_limit",
+    },
+    {
+      name: "fetch failed",
+      error: new Error("fetch failed"),
+      expected: "timeout",
+    },
+    {
+      name: "socket hang up",
+      error: new Error("socket hang up"),
+      expected: "timeout",
+    },
+    {
+      name: "etimedout",
+      error: Object.assign(new Error("request timed out"), { code: "ETIMEDOUT" }),
+      expected: "timeout",
+    },
+    {
+      name: "context overflow",
+      error: new Error("context length exceeded"),
+      expected: "context_length",
+    },
+    {
+      name: "refusal_policy",
+      error: new Error("Unhandled stop reason: refusal_policy"),
+      expected: "refusal",
+    },
+    {
+      name: "content_filter",
+      error: new Error("content_filter blocked the response"),
+      expected: "refusal",
+    },
+    {
+      name: "plain error",
+      error: new Error("plain provider failure"),
+      expected: undefined,
+    },
+    {
+      name: "http 500 is not a timeout",
+      error: Object.assign(new Error("Internal server error"), { status: 500 }),
+      expected: undefined,
+    },
+    {
+      name: "rate limit beats timeout text",
+      error: new Error("Rate limit exceeded, timeout: 30s"),
+      expected: "rate_limit",
+    },
+    {
+      name: "undefined error",
+      error: undefined,
+      expected: undefined,
+    },
+  ] as const)("classifies chat errorKind for $name", ({ error, expected }) => {
+    expect(resolveChatErrorKindFromError(error)).toBe(expected);
+  });
+
+  it("adds classified errorKind to chat lifecycle error payloads", () => {
     const { broadcast, nodeSendToSession, handler } = createHarness({
       resolveSessionKeyForRun: () => "session-detected-error",
       lifecycleErrorRetryGraceMs: 0,
@@ -3970,9 +4053,11 @@ describe("agent event handler", () => {
   });
 
   it("sends non-control-UI-visible live chat only to exact session message subscribers", () => {
+    vi.useFakeTimers();
     const { broadcast, broadcastToConnIds, nodeSendToSession, sessionMessageSubscribers, handler } =
       createHarness({
         resolveSessionKeyForRun: () => "session-hidden",
+        lifecycleErrorRetryGraceMs: 1,
       });
     sessionMessageSubscribers.subscribe("conn-selected", "session-hidden");
     sessionMessageSubscribers.subscribe("conn-other", "session-other");
@@ -3993,20 +4078,61 @@ describe("agent event handler", () => {
 
     expect(chatBroadcastCalls(broadcast)).toHaveLength(0);
     expect(nodeSendToSession).not.toHaveBeenCalled();
-    expect(requireMockArg(broadcastToConnIds, 0, 0, "hidden chat delta event")).toBe("chat");
-    expect(requireMockArg(broadcastToConnIds, 0, 2, "hidden chat delta recipients")).toEqual(
-      new Set(["conn-selected"]),
-    );
-    expect(requireMockArg(broadcastToConnIds, 1, 0, "hidden chat final event")).toBe("chat");
-    const finalPayload = requireMockPayload(broadcastToConnIds, 1, 1, "hidden chat final payload");
+    const chatCalls = broadcastToConnIds.mock.calls.filter(([event]) => event === "chat");
+    expect(chatCalls).toHaveLength(2);
+    expect(chatCalls[0]?.[2]).toEqual(new Set(["conn-selected"]));
+    expectPayloadFields(chatCalls[0]?.[1], {
+      runId: "run-hidden",
+      sessionKey: "session-hidden",
+      state: "delta",
+    });
+    const finalPayload = requireRecord(chatCalls[1]?.[1], "hidden chat final payload");
     expectPayloadFields(finalPayload, {
       runId: "run-hidden",
       sessionKey: "session-hidden",
       state: "final",
     });
-    expect(requireMockArg(broadcastToConnIds, 1, 2, "hidden chat final recipients")).toEqual(
-      new Set(["conn-selected"]),
+    expect(chatCalls[1]?.[2]).toEqual(new Set(["conn-selected"]));
+
+    const streams = ["tool", "thinking", "approval"] as const;
+    const streamCallStart = broadcastToConnIds.mock.calls.length;
+    for (const [index, stream] of streams.entries()) {
+      handler({
+        runId: "run-hidden",
+        seq: index + 3,
+        stream,
+        ts: Date.now(),
+        data: { phase: "start", delta: "Inspecting", name: "read" },
+      });
+    }
+    expect(
+      broadcastToConnIds.mock.calls
+        .slice(streamCallStart)
+        .map(([event, payload, recipients]) => [
+          event,
+          requireRecord(payload, "event").stream,
+          recipients,
+        ]),
+    ).toEqual(streams.map((stream) => ["agent", stream, new Set(["conn-selected"])]));
+
+    broadcastToConnIds.mockClear();
+    const claimId = claimAgentRunContext(
+      "revoked",
+      { isControlUiVisible: false, sessionKey: "session-hidden" },
+      { exclusive: true, trackOwner: true },
+    )!;
+    const stop = onAgentRuntimeEvent(handler);
+    emitAgentEventForOwner(
+      { runId: "revoked", stream: "lifecycle", data: { phase: "error", error: "retry" } },
+      claimId,
     );
+    stop();
+    expect(broadcastToConnIds).toHaveBeenCalledTimes(1);
+    const persisted = persistGatewaySessionLifecycleEventMock.mock.calls.length;
+    releaseAgentRunContext("revoked", claimId);
+    vi.advanceTimersByTime(1);
+    expect(broadcastToConnIds).toHaveBeenCalledTimes(1);
+    expect(persistGatewaySessionLifecycleEventMock).toHaveBeenCalledTimes(persisted);
   });
 
   it("mirrors commentary-phase assistant events only to exact session message subscribers", () => {

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.js";
 import {
@@ -16,16 +17,14 @@ import {
 import type { WorkerInstallationArtifact } from "./bundle.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
 import { hashWorkerCredential } from "./credential.js";
-import {
-  createWorkerEnvironmentService,
-  WorkerEnvironmentServiceError,
-  type WorkerEnvironmentServiceOptions,
-  type WorkerEnvironmentService,
-} from "./service.js";
+import { createWorkerInferenceStore } from "./inference-store.js";
+import { createWorkerEnvironmentService, type WorkerEnvironmentService } from "./service.js";
 import { createWorkerEnvironmentStore, type WorkerEnvironmentStore } from "./store.js";
 import type { WorkerTunnelManager } from "./tunnel.js";
 
 const HOST_KEY = [["ssh", "ed25519"].join("-"), "AAAA"].join(" ");
+type WorkerEnvironmentServiceOptions = Parameters<typeof createWorkerEnvironmentService>[0];
+type WorkerEnvironmentServiceError = Error & { code: string };
 const SSH_ENDPOINT: WorkerSshEndpoint = {
   host: "worker.example.test",
   port: 22,
@@ -112,6 +111,10 @@ describe("worker environment service", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
+  function getDevelopmentProfile() {
+    return expectDefined(config.cloudWorkers?.profiles?.development, "development worker profile");
+  }
+
   function createService(
     provider: WorkerProvider,
     serviceOptions: Partial<
@@ -119,6 +122,7 @@ describe("worker environment service", () => {
         WorkerEnvironmentServiceOptions,
         | "applyTranscriptCommit"
         | "bootstrapCallTimeoutMs"
+        | "executeInference"
         | "providerCallTimeoutMs"
         | "resolveSshIdentity"
         | "resolveWorkerGateway"
@@ -139,6 +143,12 @@ describe("worker environment service", () => {
       resolveSshIdentity: async () => ({ kind: "path", path: "/keys/worker" }),
       resolveWorkerGateway: () => ({ host: "127.0.0.1", port: 18_789 }),
       generateWorkerCredential: () => CREDENTIAL,
+      executeInference: async () => ({
+        type: "error",
+        reason: "cancelled",
+        message: "Inference cancelled",
+      }),
+      inferenceStore: createWorkerInferenceStore({ database, now: () => nowMs }),
       now: () => nowMs,
       reconcileIntervalMs: 25,
       ...serviceOptions,
@@ -266,6 +276,20 @@ describe("worker environment service", () => {
     };
   }
 
+  function inferenceRequest(
+    identity: WorkerConnectionIdentity,
+  ): Parameters<WorkerEnvironmentService["startInference"]>[1] {
+    return {
+      runEpoch: identity.ownerEpoch,
+      sessionId: identity.sessionId ?? "session-missing",
+      runId: "run-inference",
+      turnId: "turn-inference",
+      modelRef: { provider: "fake", model: "model-test" },
+      context: { messages: [] },
+      options: {},
+    };
+  }
+
   it("persists intent and an immutable profile snapshot before provisioning", async () => {
     const operationIds: string[] = [];
     const provider = createProvider({
@@ -280,7 +304,7 @@ describe("worker environment service", () => {
             lifetime: { idleTimeoutMinutes: 10 },
           },
         });
-        config.cloudWorkers!.profiles!.development.settings = { region: "mutated" };
+        getDevelopmentProfile().settings = { region: "mutated" };
         expect(profile).toEqual({ region: "test" });
         return { leaseId: "lease-1", ssh: SSH_ENDPOINT };
       },
@@ -411,12 +435,74 @@ describe("worker environment service", () => {
     expect(applyTranscriptCommit).toHaveBeenCalledOnce();
   });
 
+  it("fences inference by epoch and the durable session credential", async () => {
+    const identity = seedAttachedIdentity("worker-inference-fence", "session-inference-fence");
+    const executeInference = vi.fn<WorkerEnvironmentServiceOptions["executeInference"]>(
+      async () => ({
+        type: "error",
+        reason: "provider-error",
+        message: "Provider request failed",
+      }),
+    );
+    const workerService = createService(createProvider(), { executeInference });
+    const request = inferenceRequest(identity);
+    expect(
+      workerService.startInference(
+        identity,
+        { ...request, sessionId: "session-other" },
+        { connectionId: "connection-a", send: vi.fn() },
+      ),
+    ).toEqual({ ok: false, reason: "session-not-attached" });
+    expect(
+      workerService.startInference(
+        identity,
+        { ...request, runEpoch: request.runEpoch + 1 },
+        { connectionId: "connection-b", send: vi.fn() },
+      ),
+    ).toEqual({ ok: false, reason: "epoch-mismatch" });
+
+    const send = vi.fn();
+    const started = workerService.startInference(identity, request, {
+      connectionId: "connection-c",
+      send,
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok) {
+      throw new Error("inference fixture failed to start");
+    }
+    database.db
+      .prepare(
+        "UPDATE worker_environment_credentials SET credential_hash = ? WHERE environment_id = ?",
+      )
+      .run(
+        hashWorkerCredential(["replacement", identity.environmentId].join("-")),
+        identity.environmentId,
+      );
+    started.launch();
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    expect(executeInference).not.toHaveBeenCalled();
+    expect(send.mock.calls[0]?.[0]).toMatchObject({
+      event: "worker.inference.terminal",
+      payload: { outcome: { reason: "session-not-attached" } },
+    });
+  });
+
   it("fences and rotates live credentials", async () => {
     const environmentId = "worker-live";
     const sessionId = "session-live";
     const identity = seedAttachedIdentity(environmentId, sessionId);
     const liveEvents = createLiveEvents();
-    const workerService = createService(createProvider(), { liveEvents });
+    let inferenceSignal: AbortSignal | undefined;
+    const executeInference = vi.fn<WorkerEnvironmentServiceOptions["executeInference"]>(
+      async ({ signal }) => {
+        inferenceSignal = signal;
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return { type: "error", reason: "cancelled", message: "Inference cancelled" };
+      },
+    );
+    const workerService = createService(createProvider(), { executeInference, liveEvents });
     const request = { ...LIVE_EVENT, runEpoch: identity.ownerEpoch };
     const push = workerService.pushLiveEvent.bind(workerService, identity);
     await push(request);
@@ -424,6 +510,15 @@ describe("worker environment service", () => {
       ok: false,
       details: { reason: "epoch-mismatch" },
     });
+    const started = workerService.startInference(identity, inferenceRequest(identity), {
+      connectionId: "connection-rotation",
+      send: vi.fn(),
+    });
+    if (!started.ok) {
+      throw new Error("inference fixture failed to start");
+    }
+    started.launch();
+    await vi.waitFor(() => expect(executeInference).toHaveBeenCalledOnce());
     database.db
       .prepare("UPDATE worker_environment_credentials SET session_id = ? WHERE environment_id = ?")
       .run("session-other", environmentId);
@@ -434,6 +529,7 @@ describe("worker environment service", () => {
     liveEvents.rotateCredential.mockClear();
     nowMs += 10_000;
     await workerService.reconcileOnce();
+    expect(inferenceSignal?.aborted).toBe(true);
     expect(liveEvents.rotateCredential).toHaveBeenCalledWith(
       expect.objectContaining({
         credentialHash: store.getCredential(environmentId)?.credentialHash,
@@ -902,7 +998,9 @@ describe("worker environment service", () => {
   });
 
   it("rejects plaintext secret fields before persisting intent", async () => {
-    config.cloudWorkers!.profiles!.development.settings = { keyRef: "not-a-secret-ref" };
+    getDevelopmentProfile().settings = {
+      keyRef: "not-a-secret-ref",
+    };
     const provision = vi.fn(createProvider().provision);
 
     await expect(
@@ -925,7 +1023,7 @@ describe("worker environment service", () => {
     await expect(workerService.create("development", "request-invalid")).rejects.toMatchObject({
       code: "invalid_profile",
     } satisfies Partial<WorkerEnvironmentServiceError>);
-    const record = store.list()[0];
+    const record = expectDefined(store.list()[0], "store.list()[0] test invariant");
     expect(record).toMatchObject({ state: "failed", lastError: "region is required" });
 
     await workerService.reconcileOnce();
@@ -1205,10 +1303,10 @@ describe("worker environment service", () => {
   });
 
   it("uses the snapshotted npm selection after live config changes", async () => {
-    config.cloudWorkers!.profiles!.development.install = "npm";
+    getDevelopmentProfile().install = "npm";
     const provider = createProvider({
       provision: async () => {
-        config.cloudWorkers!.profiles!.development.install = "bundle";
+        getDevelopmentProfile().install = "bundle";
         return { leaseId: "lease-npm", ssh: SSH_ENDPOINT };
       },
     });

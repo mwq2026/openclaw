@@ -658,6 +658,13 @@ export interface ManagedOutgoingImageRecords {
   updated_at: string | null;
 }
 
+export interface McpOauthStores {
+  format_version: number;
+  store_json: string;
+  store_key: string;
+  updated_at: number;
+}
+
 export interface MediaBlobs {
   blob: Uint8Array;
   content_type: string | null;
@@ -986,6 +993,13 @@ export interface SubagentRuns {
   requester_display_key: string;
   requester_origin_json: string | null;
   requester_session_key: string;
+  requester_settle_wake_attempt_count: number | null;
+  requester_settle_wake_batch_run_ids_json: string | null;
+  requester_settle_wake_last_error: string | null;
+  requester_settle_wake_next_attempt_at: number | null;
+  requester_settle_wake_replay_count: number | null;
+  requester_settle_wake_retire_after: number | null;
+  requester_settle_wake_status: string | null;
   run_id: string;
   run_timeout_seconds: number | null;
   session_started_at: number | null;
@@ -1224,6 +1238,26 @@ export interface WorkerWorkspaceReconciliations {
   session_id: string;
 }
 
+export interface WorkspaceAttestations {
+  attested_at_ms: number;
+  updated_at_ms: number;
+  workspace_key: string;
+}
+
+export interface WorkspaceGeneratedBootstrapHashes {
+  filename: string;
+  sha256: string;
+  workspace_key: string;
+}
+
+export interface WorkspacePathAliases {
+  alias_key: string;
+  alias_path: string;
+  updated_at_ms: number;
+  workspace_key: string;
+  workspace_path: string;
+}
+
 export interface WorkspaceSetupState {
   bootstrap_seeded_at: string | null;
   setup_completed_at: string | null;
@@ -1231,6 +1265,13 @@ export interface WorkspaceSetupState {
   version: number;
   workspace_key: string;
   workspace_path: string;
+}
+
+export interface WorktreeProvisionedFileChunks {
+  chunk_index: number;
+  data: Uint8Array;
+  path: string;
+  worktree_id: string;
 }
 
 export interface Worktrees {
@@ -1242,6 +1283,7 @@ export interface Worktrees {
   owner_id: string | null;
   owner_kind: string;
   path: string;
+  provisioned_paths_json: string | null;
   removed_at: number | null;
   repo_fingerprint: string;
   repo_root: string;
@@ -1293,6 +1335,7 @@ export interface DB {
   installed_plugin_index: InstalledPluginIndex;
   macos_port_guardian_records: MacosPortGuardianRecords;
   managed_outgoing_image_records: ManagedOutgoingImageRecords;
+  mcp_oauth_stores: McpOauthStores;
   media_blobs: MediaBlobs;
   migration_runs: MigrationRuns;
   migration_sources: MigrationSources;
@@ -1335,6 +1378,10 @@ export interface DB {
   worker_transcript_commits: WorkerTranscriptCommits;
   worker_workspace_pending_results: WorkerWorkspacePendingResults;
   worker_workspace_reconciliations: WorkerWorkspaceReconciliations;
+  workspace_attestations: WorkspaceAttestations;
+  workspace_generated_bootstrap_hashes: WorkspaceGeneratedBootstrapHashes;
+  workspace_path_aliases: WorkspacePathAliases;
   workspace_setup_state: WorkspaceSetupState;
+  worktree_provisioned_file_chunks: WorktreeProvisionedFileChunks;
   worktrees: Worktrees;
 }

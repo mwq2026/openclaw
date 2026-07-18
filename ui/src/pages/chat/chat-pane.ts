@@ -31,6 +31,17 @@ import {
 } from "../../app/context.ts";
 import { hasOperatorAdminAccess, hasOperatorWriteAccess } from "../../app/operator-access.ts";
 import {
+  cancelQuestionPrompt,
+  createQuestionPromptState,
+  disposeQuestionPromptState,
+  handleQuestionPromptEvent,
+  listQuestionPrompts,
+  refreshPendingQuestionsWithRetry,
+  setQuestionPromptClient,
+  submitQuestionPrompt,
+  type QuestionPrompt,
+} from "../../app/question-prompt.ts";
+import {
   BROWSER_ANNOTATION_EVENT,
   type BrowserAnnotationDraft,
 } from "../../components/browser/browser-annotation.ts";
@@ -300,6 +311,11 @@ class ChatPane extends OpenClawLightDomElement {
 
   private readonly chatState = new ChatStateController<ChatPageHost>(this);
   private readonly transcript = new ChatTranscriptController(this);
+  private readonly questionPromptState = createQuestionPromptState(() => {
+    this.questionPrompts = listQuestionPrompts(this.questionPromptState);
+    this.requestUpdate();
+  });
+  private questionPrompts: QuestionPrompt[] = [];
   private state: ChatPageHost | undefined;
   /* Infinity until the first ResizeObserver tick so an unmeasured pane keeps
    * the wide side-by-side layout instead of flashing the stacked one. */
@@ -640,6 +656,29 @@ class ChatPane extends OpenClawLightDomElement {
       // publishes the actionable error for the owning page.
       this.unreadPatchGuard.patchFailed(guardKey);
     });
+  }
+
+  private async restoreArchivedSession(sessionKey: string) {
+    const scope = this.captureConnectionScope();
+    if (!scope || scope.state.sessionKey !== sessionKey) {
+      return;
+    }
+    const agentId = parseAgentSessionKey(sessionKey)?.agentId ?? resolveChatAgentId(scope.state);
+    let failure: string | null = null;
+    try {
+      // The patch can resolve falsy on failure; the capability error explains it.
+      const patched = await scope.sessions.patch(sessionKey, { archived: false }, { agentId });
+      if (!patched) {
+        failure = scope.sessions.state.error;
+      }
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    if (failure && this.isConnectionScopeCurrent(scope) && scope.state.sessionKey === sessionKey) {
+      scope.state.lastError = failure;
+      scope.state.chatError = failure;
+      scope.state.requestUpdate?.();
+    }
   }
 
   private setPaneSessionKey(sessionKey: string): string | null {
@@ -1610,6 +1649,9 @@ class ChatPane extends OpenClawLightDomElement {
     chatState.addCleanup(
       this.context.gateway.subscribeEvents((event) => {
         const state = this.state;
+        if (state) {
+          handleQuestionPromptEvent(this.questionPromptState, event);
+        }
         if (state && !parseCatalogSessionKey(state.sessionKey)) {
           if (event.event === "task.suggestion" && event.payload) {
             this.handleTaskSuggestionEvent(event.payload as TaskSuggestionEvent);
@@ -1686,6 +1728,7 @@ class ChatPane extends OpenClawLightDomElement {
     resetChatViewState(this.paneId);
     this.state = undefined;
     this.connectedClient = null;
+    disposeQuestionPromptState(this.questionPromptState);
     super.disconnectedCallback();
   }
 
@@ -1836,10 +1879,14 @@ class ChatPane extends OpenClawLightDomElement {
         markQueuedChatSendsWaitingForReconnect(state);
       }
       this.connectedClient = null;
+      setQuestionPromptClient(this.questionPromptState, null);
       state.realtimeTalkSession?.stop();
       state.realtimeTalkSession = null;
       state.realtimeTalkActive = false;
       state.realtimeTalkVideoStream = null;
+      state.realtimeTalkVideoCapable = false;
+      state.realtimeTalkVideoPending = false;
+      state.realtimeTalkCameraError = false;
       state.realtimeTalkStatus = "idle";
       state.realtimeTalkInputLevel.set(0);
       state.resetToolStream();
@@ -1876,6 +1923,8 @@ class ChatPane extends OpenClawLightDomElement {
         }
       };
       this.connectedClient = startupClient;
+      setQuestionPromptClient(this.questionPromptState, startupClient);
+      refreshPendingQuestionsWithRetry(this.questionPromptState, startupClient, clientIsCurrent);
       this.headerWorktreePaths.clear();
       this.headerBranches.clear();
       this.headerPlatform = null;
@@ -2278,7 +2327,14 @@ class ChatPane extends OpenClawLightDomElement {
       compactionStatus: state.compactionStatus,
       fallbackStatus: state.fallbackStatus,
       planStatus: state.planStatus,
-      questionStatus: state.questionStatus,
+      gatewayQuestionPrompts: catalogKey ? [] : this.questionPrompts,
+      onGatewayQuestionChange: () => {
+        this.questionPrompts = [...this.questionPrompts];
+        this.requestUpdate();
+      },
+      onGatewayQuestionSubmit: (id, answers) =>
+        submitQuestionPrompt(this.questionPromptState, id, answers),
+      onGatewayQuestionSkip: (id) => cancelQuestionPrompt(this.questionPromptState, id),
       messages: catalogKey ? this.catalogMessages : state.chatMessages,
       historyPagination:
         catalogKey || state.chatHistoryPagination?.hasMore || this.loadingOlder
@@ -2304,9 +2360,18 @@ class ChatPane extends OpenClawLightDomElement {
       realtimeTalkInputLevel: state.realtimeTalkInputLevel,
       realtimeTalkConversation: state.realtimeTalkConversation,
       realtimeTalkVideoStream: state.realtimeTalkVideoStream,
+      realtimeTalkVideoCapable: state.realtimeTalkVideoCapable,
+      realtimeTalkVideoPending: state.realtimeTalkVideoPending,
+      realtimeTalkCameraError: state.realtimeTalkCameraError,
       connected: state.connected,
       canSend: catalogKey ? this.catalogSession?.canContinue === true : !selectedSessionArchived,
       disabledReason: catalogDisabledReason ?? disabledReason,
+      disabledActionLabel:
+        selectedSessionArchived && !catalogDisabledReason ? t("common.restore") : null,
+      onDisabledAction:
+        selectedSessionArchived && !catalogDisabledReason
+          ? () => void this.restoreArchivedSession(state.sessionKey)
+          : null,
       error: state.lastError,
       sessions: state.sessionsResult,
       sessionHost: {
@@ -2421,7 +2486,7 @@ class ChatPane extends OpenClawLightDomElement {
         this.context.navigate("sessions", { search: `?${search.toString()}` });
       },
       onToggleRealtimeTalk: () => void state.toggleRealtimeTalk(),
-      onToggleRealtimeVideo: () => void state.toggleRealtimeTalk({ video: true }),
+      onToggleRealtimeCamera: () => void state.toggleRealtimeTalkCamera(),
       onDismissError: () => {
         dismissChatError(state as never);
         state.requestUpdate?.();
@@ -2435,11 +2500,6 @@ class ChatPane extends OpenClawLightDomElement {
       onQueueRetry: (id) => void state.retryQueuedChatMessage(id),
       onQueueSteer: (id) => void state.steerQueuedChatMessage(id),
       onGoalCommand: (command) => void state.handleSendChat(command),
-      onQuestionSubmit: (actionToken, answers, onRejected) =>
-        void state.handleSendChat(
-          `/codex answer ${actionToken} answers:${encodeURIComponent(JSON.stringify(answers))}`,
-          { onLocalCommandSendRejected: onRejected },
-        ),
       onSideQuestion: (command, displayQuestion, onSendRejected) =>
         void state.handleSendChat(command, {
           ...(displayQuestion ? { sideQuestionDisplayText: displayQuestion } : {}),

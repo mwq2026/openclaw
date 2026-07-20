@@ -44,6 +44,7 @@ let modelRuntimeBuildTimeoutMs = DEFAULT_MODEL_RUNTIME_BUILD_TIMEOUT_MS;
 const owners = new Map<string, PreparedModelRuntimeOwner>();
 const agentBuildCompletions = new Map<string, Promise<void>>();
 const standaloneActivationTails = new Map<string, Promise<void>>();
+let retainedDirectRunOwner: { key: string; owner: PreparedModelRuntimeOwner } | undefined;
 let gatewayLifecycleActive = false;
 let refreshTail: Promise<void> = Promise.resolve();
 let refreshRequestEpoch = 0;
@@ -244,6 +245,7 @@ async function activateStandalonePreparedModelRuntimeNow(
 async function acquirePreparedModelRuntimeLease(
   rawInput: PreparedModelRuntimeInput,
   provenance: "run" | "ephemeral",
+  options: { retainIdleRunOwner?: boolean } = {},
 ): Promise<PreparedModelRuntimeLease> {
   let input = normalizePreparedModelRuntimeInput({
     ...rawInput,
@@ -322,6 +324,18 @@ async function acquirePreparedModelRuntimeLease(
   if (owner.provenance !== provenance) {
     return { snapshot, release: () => {} };
   }
+  if (provenance === "run" && options.retainIdleRunOwner) {
+    const previous = retainedDirectRunOwner;
+    retainedDirectRunOwner = { key, owner };
+    if (
+      previous &&
+      previous.owner !== owner &&
+      (previous.owner.leaseCount ?? 0) === 0 &&
+      owners.get(previous.key) === previous.owner
+    ) {
+      owners.delete(previous.key);
+    }
+  }
   owner.leaseCount = (owner.leaseCount ?? 0) + 1;
   let released = false;
   return {
@@ -332,10 +346,13 @@ async function acquirePreparedModelRuntimeLease(
       }
       released = true;
       owner.leaseCount = Math.max(0, (owner.leaseCount ?? 1) - 1);
-      // Dynamic generations live exactly as long as their admitted run or metadata read. The
-      // identity check prevents an old lease from deleting a replacement at the same key.
+      // Configless direct runs retain one bounded idle generation; dynamic gateway and metadata
+      // generations live exactly as long as their lease. The identity checks prevent an old
+      // release from deleting a replacement at the same key.
       if (owner.leaseCount === 0 && owners.get(key) === owner) {
-        owners.delete(key);
+        if (retainedDirectRunOwner?.owner !== owner) {
+          owners.delete(key);
+        }
       }
     },
   };
@@ -344,8 +361,9 @@ async function acquirePreparedModelRuntimeLease(
 /** Acquires the exact writable workspace generation at agent-run admission. */
 export async function acquireAgentRunPreparedModelRuntime(
   rawInput: PreparedModelRuntimeInput,
+  options: { retainIdleRunOwner?: boolean } = {},
 ): Promise<PreparedModelRuntimeLease> {
-  return await acquirePreparedModelRuntimeLease(rawInput, "run");
+  return await acquirePreparedModelRuntimeLease(rawInput, "run", options);
 }
 
 /** Acquires a one-read metadata generation without retaining a dynamic workspace owner. */
@@ -648,7 +666,7 @@ async function drainPendingAuthMutations(): Promise<void> {
         entries.push({ owner, input: owner.input });
       }
     }
-    await Promise.all(
+    const results = await Promise.allSettled(
       entries.map(
         async ({ owner, input }) =>
           await publishPreparedModelRuntimeSnapshot(input, {
@@ -657,6 +675,20 @@ async function drainPendingAuthMutations(): Promise<void> {
           }),
       ),
     );
+    // Supersession belongs to one owner generation. Wait for every sibling refresh before
+    // deciding the batch outcome so an expected race cannot hide a genuine owner failure.
+    const failures = results.flatMap((result) =>
+      result.status === "rejected" &&
+      !(result.reason instanceof PreparedModelRuntimePublicationSupersededError)
+        ? [result.reason]
+        : [],
+    );
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, `${failures.length} model runtime owner refreshes failed`);
+    }
   }
 }
 
@@ -666,6 +698,7 @@ function invalidateForAuthMutation(event: AuthMutationEvent): void {
     agentDir: normalizeOptionalDir(event.agentDir),
   };
   const staleError = new Error("prepared model runtime owner is stale after auth mutation");
+  let invalidatedOwner = false;
   for (const owner of owners.values()) {
     if (
       !normalizedEvent.affectsInheritedStores &&
@@ -674,12 +707,21 @@ function invalidateForAuthMutation(event: AuthMutationEvent): void {
     ) {
       continue;
     }
+    invalidatedOwner = true;
     owner.generation += 1;
     owner.needsRefresh = true;
     owner.refreshError = staleError;
   }
+  if (!invalidatedOwner) {
+    // A first owner reads the already-published auth snapshot while it builds. Replaying an earlier
+    // mutation would immediately stale that initial generation even though no prior owner existed.
+    return;
+  }
   pendingAuthMutations.push(normalizedEvent);
   void enqueuePreparedModelRuntimePublication(drainPendingAuthMutations).catch((error: unknown) => {
+    if (error instanceof PreparedModelRuntimePublicationSupersededError) {
+      return;
+    }
     log.warn(`auth-triggered model runtime refresh failed: ${String(error)}`);
   });
 }
@@ -692,6 +734,7 @@ function resetPreparedModelRuntimeSnapshotsForTest(): void {
   owners.clear();
   agentBuildCompletions.clear();
   standaloneActivationTails.clear();
+  retainedDirectRunOwner = undefined;
   gatewayLifecycleActive = false;
   refreshTail = Promise.resolve();
   refreshRequestEpoch = 0;

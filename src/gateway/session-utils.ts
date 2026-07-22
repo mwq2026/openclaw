@@ -7,7 +7,10 @@ import {
   normalizeOptionalLowercaseString,
 } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
-import type { SessionsListParams } from "../../packages/gateway-protocol/src/index.js";
+import type {
+  SessionCreatorIdentity,
+  SessionsListParams,
+} from "../../packages/gateway-protocol/src/index.js";
 import {
   readAcpSessionMeta,
   readAcpSessionMetaForEntry,
@@ -91,7 +94,10 @@ import {
   type SessionStoreTarget,
   type SessionScope,
 } from "../config/sessions.js";
-import { listSessionEntries as listAccessorSessionEntries } from "../config/sessions/session-accessor.js";
+import {
+  listSessionEntries as listAccessorSessionEntries,
+  listSessionEntriesReadOnly as listAccessorSessionEntriesReadOnly,
+} from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { projectPluginSessionExtensionsSync } from "../plugins/host-hook-state.js";
 import { withPinnedActivePluginRegistryWorkspaceDir } from "../plugins/runtime-workspace-state.js";
@@ -971,7 +977,11 @@ export function resolveDeletedAgentIdFromSessionKey(
   return agentId;
 }
 
-export function loadSessionEntry(sessionKey: string, opts?: { agentId?: string; clone?: boolean }) {
+function loadSessionEntryWithMode(
+  sessionKey: string,
+  opts: { agentId?: string; clone?: boolean } | undefined,
+  readOnly: boolean,
+) {
   const cfg = getRuntimeConfig();
   const key = normalizeOptionalString(sessionKey) ?? "";
   const target = resolveGatewaySessionStoreTargetWithStore({
@@ -979,6 +989,7 @@ export function loadSessionEntry(sessionKey: string, opts?: { agentId?: string; 
     key,
     ...(opts?.clone === false ? { clone: false } : {}),
     ...(opts?.agentId ? { agentId: opts.agentId } : {}),
+    ...(readOnly ? { readOnly: true } : {}),
   });
   const storePath = target.storePath;
   const store = target.store;
@@ -993,6 +1004,17 @@ export function loadSessionEntry(sessionKey: string, opts?: { agentId?: string; 
     storeKeys: target.storeKeys,
     legacyKey,
   };
+}
+
+export function loadSessionEntry(sessionKey: string, opts?: { agentId?: string; clone?: boolean }) {
+  return loadSessionEntryWithMode(sessionKey, opts, false);
+}
+
+export function loadSessionEntryReadOnly(
+  sessionKey: string,
+  opts?: { agentId?: string; clone?: boolean },
+) {
+  return loadSessionEntryWithMode(sessionKey, opts, true);
 }
 
 function resolveFreshestSessionStoreMatchFromStoreKeys(
@@ -1329,7 +1351,7 @@ function loadGatewaySessionLookupStore(
   storePath: string,
   clone: boolean | undefined,
   agentId?: string,
-  options: { allowLegacyFallback?: boolean } = {},
+  options: { allowLegacyFallback?: boolean; readOnly?: boolean } = {},
 ): Record<string, SessionEntry> {
   try {
     if (options.allowLegacyFallback) {
@@ -1338,8 +1360,11 @@ function loadGatewaySessionLookupStore(
         return legacyStore;
       }
     }
+    const listEntries = options.readOnly
+      ? listAccessorSessionEntriesReadOnly
+      : listAccessorSessionEntries;
     return Object.fromEntries(
-      listAccessorSessionEntries({
+      listEntries({
         ...(agentId ? { agentId } : {}),
         ...(clone === false ? { clone: false } : {}),
         storePath,
@@ -1357,6 +1382,7 @@ function resolveGatewaySessionStoreLookup(params: {
   agentId: string;
   clone?: boolean;
   initialStore?: Record<string, SessionEntry>;
+  readOnly?: boolean;
 }): {
   storePath: string;
   store: Record<string, SessionEntry>;
@@ -1380,6 +1406,7 @@ function resolveGatewaySessionStoreLookup(params: {
   const loadStore = (target: SessionStoreTarget) =>
     loadGatewaySessionLookupStore(target.storePath, params.clone, target.agentId, {
       allowLegacyFallback: !configured,
+      readOnly: params.readOnly,
     });
   const firstCandidate = candidates[0] ?? fallback;
   let selectedStorePath = firstCandidate.storePath;
@@ -1426,6 +1453,7 @@ function resolveExplicitDeletedLegacyMainStoreTarget(params: {
   cfg: OpenClawConfig;
   key: string;
   clone?: boolean;
+  readOnly?: boolean;
 }): GatewaySessionStoreTargetWithStore | null {
   const parsed = parseAgentSessionKey(params.key);
   const legacyAgentId = normalizeAgentId(parsed?.agentId);
@@ -1460,7 +1488,9 @@ function resolveExplicitDeletedLegacyMainStoreTarget(params: {
     if (target.agentId !== legacyAgentId) {
       continue;
     }
-    const store = loadGatewaySessionLookupStore(target.storePath, params.clone, target.agentId);
+    const store = loadGatewaySessionLookupStore(target.storePath, params.clone, target.agentId, {
+      readOnly: params.readOnly,
+    });
     const match = findFreshestStoreMatch(store, ...lookupSeeds);
     if (!match) {
       continue;
@@ -1495,6 +1525,7 @@ export function resolveGatewaySessionStoreTargetWithStore(params: {
   key: string;
   agentId?: string;
   clone?: boolean;
+  readOnly?: boolean;
   store?: Record<string, SessionEntry>;
 }): GatewaySessionStoreTargetWithStore {
   const key = normalizeOptionalString(params.key) ?? "";
@@ -1502,6 +1533,7 @@ export function resolveGatewaySessionStoreTargetWithStore(params: {
     cfg: params.cfg,
     key,
     clone: params.clone,
+    readOnly: params.readOnly,
   });
   if (explicitDeletedMainTarget) {
     return explicitDeletedMainTarget;
@@ -1524,6 +1556,7 @@ export function resolveGatewaySessionStoreTargetWithStore(params: {
     canonicalKey,
     agentId,
     clone: params.clone,
+    readOnly: params.readOnly,
     initialStore: params.store,
   });
 
@@ -2204,6 +2237,7 @@ export function buildGatewaySessionRow(params: {
 
   return {
     key,
+    createdBy: entry?.createdBy,
     spawnedBy: subagentOwner || entry?.spawnedBy,
     swarmGroupId: entry?.swarmGroupId,
     spawnedWorkspaceDir: entry?.spawnedWorkspaceDir,
@@ -2238,6 +2272,7 @@ export function buildGatewaySessionRow(params: {
     agentStatus,
     observerDigest: observerDigest
       ? {
+          runId: observerDigest.runId,
           headline: observerDigest.headline,
           health: observerDigest.health,
           updatedAt: observerDigest.updatedAt,
@@ -2434,7 +2469,7 @@ export function loadGatewaySessionRow(
   },
 ): GatewaySessionRow | null {
   const now = options?.now ?? Date.now();
-  const { cfg, storePath, store, entry, canonicalKey } = loadSessionEntry(sessionKey, {
+  const { cfg, storePath, store, entry, canonicalKey } = loadSessionEntryReadOnly(sessionKey, {
     clone: false,
     ...(options?.agentId ? { agentId: options.agentId } : {}),
   });
@@ -2504,6 +2539,7 @@ const SESSIONS_LIST_DEFAULT_LIMIT = 100;
 
 type SessionEntrySelection = {
   entries: SessionEntryPair[];
+  creatorEntries: SessionEntryPair[];
   totalCount: number;
   limitApplied?: number;
   offset: number;
@@ -2616,6 +2652,9 @@ function filterSessionEntries(params: {
       );
     })
     .filter(([, entry]) => {
+      if (opts.archived === "all") {
+        return true;
+      }
       const archived = entry?.archivedAt !== undefined;
       return opts.archived === true ? archived : !archived;
     })
@@ -2690,7 +2729,11 @@ function selectSessionEntries(params: {
   getRowContext?: SessionListRowContextProvider;
   defaultLimit?: number;
 }): SessionEntrySelection {
-  const filtered = filterSessionEntries(params);
+  const creatorEntries = filterSessionEntries(params);
+  const creatorId = normalizeOptionalString(params.opts.creatorId);
+  const filtered = creatorId
+    ? creatorEntries.filter(([, entry]) => entry.createdBy?.id === creatorId)
+    : creatorEntries;
   const limit = resolveSessionsListLimit(params.opts, params.defaultLimit);
   const offset = resolveSessionsListOffset(params.opts);
   const windowLimit = resolveSessionsListWindowLimit(limit, offset);
@@ -2701,12 +2744,34 @@ function selectSessionEntries(params: {
   const hasMore = nextOffset < filtered.length;
   return {
     entries,
+    creatorEntries,
     totalCount: filtered.length,
     limitApplied: limit,
     offset,
     nextOffset: hasMore ? nextOffset : null,
     hasMore,
   };
+}
+
+function listSessionCreatorIdentities(
+  entries: readonly SessionEntryPair[],
+): SessionCreatorIdentity[] {
+  const creators = new Map<string, SessionCreatorIdentity>();
+  for (const [, entry] of entries) {
+    const id = normalizeOptionalString(entry.createdBy?.id);
+    if (!id) {
+      continue;
+    }
+    const label = normalizeOptionalString(entry.createdBy?.label);
+    const existing = creators.get(id);
+    if (!existing || (label && (!existing.label || label.localeCompare(existing.label) < 0))) {
+      creators.set(id, { id, ...(label ? { label } : {}) });
+    }
+  }
+  return [...creators.values()].toSorted((a, b) => {
+    const byLabel = (a.label ?? a.id).localeCompare(b.label ?? b.id);
+    return byLabel || a.id.localeCompare(b.id);
+  });
 }
 
 export function filterAndSortSessionEntries(params: {
@@ -2751,7 +2816,8 @@ export function listSessionsFromStore(params: {
         : undefined,
     defaultLimit: SESSIONS_LIST_DEFAULT_LIMIT,
   });
-  const { entries, totalCount, limitApplied, offset, nextOffset, hasMore } = selection;
+  const { entries, creatorEntries, totalCount, limitApplied, offset, nextOffset, hasMore } =
+    selection;
   const fullRowContext =
     rowContext || hasSpawnedByFilter || entries.length > SESSIONS_LIST_YIELD_BATCH_SIZE
       ? getRowContext()
@@ -2795,6 +2861,7 @@ export function listSessionsFromStore(params: {
     offset: offset > 0 ? offset : undefined,
     nextOffset,
     hasMore,
+    creators: listSessionCreatorIdentities(creatorEntries),
     defaults: getSessionDefaults(cfg, params.modelCatalog, { allowPluginNormalization: false }),
     sessions,
   };

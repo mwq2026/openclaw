@@ -23,9 +23,14 @@ export type {
   GatewayErrorDetails,
   McpAppViewExpiredErrorDetails,
   MissingScopeErrorDetails,
+  WizardNotFoundErrorDetails,
 } from "./schema/error-codes.js";
 export * from "./schema/board.js";
-export { SessionCreatorIdentitySchema, type SessionCreatorIdentity } from "./schema/sessions.js";
+export {
+  SessionCreatedActorSchema,
+  type SessionCreatedActor,
+  type SessionRow,
+} from "./schema/sessions-row.js";
 export * from "./migration-api.js";
 export type * from "./public-session-catalog.js";
 import {
@@ -278,6 +283,7 @@ import {
   GatewayErrorDetailCodes,
   GatewayErrorDetailsSchema,
   MissingScopeErrorDetailsSchema,
+  WizardNotFoundErrorDetailsSchema,
   EnvironmentSummarySchema,
   EnvironmentsCreateParamsSchema,
   EnvironmentsCreateResultSchema,
@@ -411,6 +417,7 @@ import {
   SecretsResolveParamsSchema,
   SecretsResolveResultSchema,
   SessionBranchSchema,
+  SessionRowSchema,
   SessionsAbortParamsSchema,
   SessionsCompactParamsSchema,
   SessionsCleanupParamsSchema,
@@ -438,6 +445,19 @@ import {
   SessionObserverDigestSchema,
   SessionObserverHealthSchema,
   SessionObserverPlanProgressSchema,
+  SessionMemberAddParamsSchema,
+  SessionMemberMutationResultSchema,
+  SessionMemberRemoveParamsSchema,
+  SessionMemberSchema,
+  SessionMembersListParamsSchema,
+  SessionMembersListResultSchema,
+  SessionSharingActionSchema,
+  SessionSharingEventSchema,
+  SessionSharingIdentitySchema,
+  SessionSharingRoleSchema,
+  SessionVisibilitySchema,
+  SessionVisibilitySetParamsSchema,
+  SessionVisibilitySetResultSchema,
   SessionsObserverAskParamsSchema,
   SessionsObserverAskResultSchema,
   SessionsObserverVisibilityParamsSchema,
@@ -787,6 +807,10 @@ export const validateSessionsObserverAskParams = lazyCompile(SessionsObserverAsk
 export const validateSessionsObserverVisibilityParams = lazyCompile(
   SessionsObserverVisibilityParamsSchema,
 );
+export const validateSessionVisibilitySetParams = lazyCompile(SessionVisibilitySetParamsSchema);
+export const validateSessionMembersListParams = lazyCompile(SessionMembersListParamsSchema);
+export const validateSessionMemberAddParams = lazyCompile(SessionMemberAddParamsSchema);
+export const validateSessionMemberRemoveParams = lazyCompile(SessionMemberRemoveParamsSchema);
 export const validateSessionsCreateParams = lazyCompile(SessionsCreateParamsSchema);
 export const validateSessionsSendParams = lazyCompile(SessionsSendParamsSchema);
 export const validateSessionsDispatchParams = lazyCompile(SessionsDispatchParamsSchema);
@@ -1005,6 +1029,7 @@ export {
   ErrorShapeSchema,
   GatewayErrorDetailsSchema,
   MissingScopeErrorDetailsSchema,
+  WizardNotFoundErrorDetailsSchema,
   WorkerAdmissionFailureReasonSchema,
   WorkerAdmissionHandshakeSchema,
   WorkerAdmissionResponseFrameSchema,
@@ -1153,6 +1178,7 @@ export {
   SessionsCompactionBranchParamsSchema,
   SessionsCompactionRestoreParamsSchema,
   SessionBranchSchema,
+  SessionRowSchema,
   SessionsBranchesListParamsSchema,
   SessionsBranchesListResultSchema,
   SessionsBranchesSwitchParamsSchema,
@@ -1167,6 +1193,19 @@ export {
   SessionObserverDigestSchema,
   SessionObserverHealthSchema,
   SessionObserverPlanProgressSchema,
+  SessionMemberAddParamsSchema,
+  SessionMemberMutationResultSchema,
+  SessionMemberRemoveParamsSchema,
+  SessionMemberSchema,
+  SessionMembersListParamsSchema,
+  SessionMembersListResultSchema,
+  SessionSharingActionSchema,
+  SessionSharingEventSchema,
+  SessionSharingIdentitySchema,
+  SessionSharingRoleSchema,
+  SessionVisibilitySchema,
+  SessionVisibilitySetParamsSchema,
+  SessionVisibilitySetResultSchema,
   SessionsObserverAskParamsSchema,
   SessionsObserverAskResultSchema,
   SessionsObserverVisibilityParamsSchema,
@@ -1838,6 +1877,19 @@ export type {
   SessionObserverDigest,
   SessionObserverHealth,
   SessionObserverPlanProgress,
+  SessionMember,
+  SessionMemberAddParams,
+  SessionMemberMutationResult,
+  SessionMemberRemoveParams,
+  SessionMembersListParams,
+  SessionMembersListResult,
+  SessionSharingAction,
+  SessionSharingEvent,
+  SessionSharingIdentity,
+  SessionSharingRole,
+  SessionVisibility,
+  SessionVisibilitySetParams,
+  SessionVisibilitySetResult,
   SessionsObserverAskParams,
   SessionsObserverAskResult,
   SessionsObserverVisibilityParams,

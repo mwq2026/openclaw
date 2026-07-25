@@ -38,6 +38,7 @@ import {
 } from "../../../lib/chat/side-question.ts";
 import type { EmbedSandboxMode } from "../../../lib/chat/tool-display.ts";
 import { copyToClipboard } from "../../../lib/clipboard.ts";
+import { fnv1aUtf16 } from "../../../lib/fnv1a.ts";
 import {
   areUiSessionKeysEquivalent,
   isUiGlobalScopeConfigured,
@@ -229,13 +230,30 @@ class ChatSessionVirtualizerHost implements ReactiveControllerHost {
     this.threadInnerElement = element instanceof HTMLDivElement ? element : null;
   };
   private readonly measureRowRefs = new Map<string, (element?: Element) => void>();
+  private pruneDetachedRowsQueued = false;
   private measureRowRefFor(key: string): (element?: Element) => void {
     let callback = this.measureRowRefs.get(key);
     if (!callback) {
-      callback = (element?: Element) =>
-        this.virtualizerController
-          .getVirtualizer()
-          .measureElement(element instanceof HTMLElement ? element : null);
+      callback = (element?: Element) => {
+        if (element instanceof HTMLElement) {
+          this.virtualizerController.getVirtualizer().measureElement(element);
+          return;
+        }
+        // Re-stamps (e.g. the chat<->dashboard face switch) re-invoke each
+        // stable row ref as an (undefined, element) pair while the new subtree
+        // is still detached. measureElement(null) prunes every disconnected
+        // row, so calling it synchronously unobserves just-registered sibling
+        // rows and freezes their heights at the old pane width (overlapping
+        // bubbles). Defer until the commit lands so only removed rows prune.
+        if (this.pruneDetachedRowsQueued) {
+          return;
+        }
+        this.pruneDetachedRowsQueued = true;
+        queueMicrotask(() => {
+          this.pruneDetachedRowsQueued = false;
+          this.virtualizerController.getVirtualizer().measureElement(null);
+        });
+      };
       this.measureRowRefs.set(key, callback);
     }
     return callback;
@@ -734,12 +752,7 @@ function removeReplyContextMenu(paneId?: string) {
 
 function stableReplyMessageId(senderLabel: string | undefined, text: string): string {
   const source = `${senderLabel ?? ""}\n${text}`;
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `reply:${(hash >>> 0).toString(16)}`;
+  return `reply:${fnv1aUtf16(source).toString(16)}`;
 }
 
 function createReplyContextMenuButton(onClick: () => void): HTMLButtonElement {

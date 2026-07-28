@@ -241,11 +241,6 @@ export const en: TranslationMap = {
       channelSchemaUnavailable: "Channel config schema unavailable.",
       loadingSchema: "Loading config schema…",
     },
-    health: {
-      title: "Channel health",
-      subtitle: "Channel status snapshots from the gateway.",
-      noSnapshotYet: "No snapshot yet.",
-    },
     generic: {
       subtitle: "Channel status and configuration.",
     },
@@ -1093,9 +1088,9 @@ export const en: TranslationMap = {
         label: "Broadcast",
         description: "Broadcast and notification settings",
       },
-      audio: {
-        label: "Audio",
-        description: "Audio input/output settings",
+      tts: {
+        label: "Voice",
+        description: "Text-to-speech output, voices, and personas",
       },
       session: {
         label: "Session",
@@ -1105,17 +1100,9 @@ export const en: TranslationMap = {
         label: "Cron",
         description: "Scheduled tasks and automation",
       },
-      web: {
-        label: "Web",
-        description: "Web server and API settings",
-      },
       discovery: {
         label: "Discovery",
         description: "Service discovery and networking",
-      },
-      canvasHost: {
-        label: "Canvas Host",
-        description: "Canvas rendering and display",
       },
       talk: {
         label: "Talk",
@@ -1148,7 +1135,7 @@ export const en: TranslationMap = {
     },
   },
   // Historical namespace from the pre-restructure "quick settings" page; its
-  // keys now serve General, Privacy & Security, Appearance, and Profile.
+  // keys now serve Models, General, Privacy & Security, Appearance, and Profile.
   // Renaming would force retranslation of every key, so the name stays.
   quickSettings: {
     language: "Language",
@@ -1183,6 +1170,10 @@ export const en: TranslationMap = {
       lobsterdex: "Lobsterdex",
       lobsterdexSeen: "{seen}/{total} visited",
       lobsterdexFirstVisited: "{name} · first visited {date}",
+      lobsterdexCardFirstVisited: "First visited {date}",
+      lobsterdexCardShinySeen: "✦ Shiny spotted {date}",
+      lobsterdexCardCopyLink: "Copy link",
+      lobsterdexOpen: "Open Lobsterdex",
     },
     security: {
       title: "Security",
@@ -1280,7 +1271,7 @@ export const en: TranslationMap = {
       broadcast: "Broadcast",
       notifications: "Notifications",
       talk: "Talk",
-      audio: "Audio",
+      tts: "Voice",
       commands: "Commands",
       hooks: "Hooks",
       bindings: "Bindings",
@@ -1289,12 +1280,9 @@ export const en: TranslationMap = {
       security: "Security Policy",
       plugins: "Plugins",
       gateway: "Gateway",
-      web: "Web",
       browser: "Browser",
       nodeHost: "Node Host",
-      canvasHost: "Canvas Host",
       discovery: "Discovery",
-      media: "Media",
       acp: "ACP",
       mcp: "MCP",
       theme: "Theme",
@@ -1425,7 +1413,6 @@ export const en: TranslationMap = {
     open: "Open",
     applying: "Applying…",
     autoSaveSaving: "Saving…",
-    autoSaveSaved: "Saved",
     autoSaveFailed: "Save failed",
     autoSaveConflict: "Settings changed elsewhere",
     retry: "Retry",
@@ -1783,7 +1770,7 @@ export const en: TranslationMap = {
     },
   },
   routeTitles: {
-    modelProviders: "Model Providers",
+    modelProviders: "Models",
     notifications: "Notifications",
     advanced: "Advanced",
   },
@@ -1795,7 +1782,7 @@ export const en: TranslationMap = {
     workboard: "Workboard",
     worktrees: "Worktrees",
     channels: "Channels",
-    connection: "Connection",
+    connection: "Gateway",
     sessions: "Threads",
     usage: "Usage",
     cron: "Automations",
@@ -1811,6 +1798,7 @@ export const en: TranslationMap = {
     profile: "Profile",
     communications: "Communications",
     appearance: "Appearance",
+    lobsterdex: "Lobsterdex",
     automation: "Automation",
     mcp: "MCP",
     memory: "Memory",
@@ -1845,19 +1833,20 @@ export const en: TranslationMap = {
     chat: "Gateway chat for quick interventions.",
     dashboards: "Threads that open on their dashboard face.",
     custodian: "System setup and care.",
-    config: "Model defaults, language, and gateway host.",
+    config: "Language and shortcuts to core settings.",
     profile: "Your agent's stats, streaks, and life in the reef.",
-    communications: "Channels, messages, and audio settings.",
+    communications: "Messages, talk, and voice settings.",
     appearance: "Theme, UI, and setup wizard settings.",
+    lobsterdex: "Every lobster palette that has visited this browser.",
     automation: "Commands, hooks, cron, and plugins.",
     mcp: "MCP servers, auth, tools, and diagnostics.",
     memory: "Memory engine, backend, search, and dreaming.",
-    infrastructure: "Gateway, web, browser, and media settings.",
+    infrastructure: "Gateway, browser, node host, discovery, and ACP settings.",
     labs: "Experimental agent and tool capabilities.",
     about: "Control UI and connected Gateway build identity.",
-    aiAgents: "Global agent defaults: models, skills, tools, memory, session.",
+    aiAgents: "Global agent defaults: skills, tools, and session.",
     modelSetup: "Connect a verified AI model",
-    modelProviders: "Configured providers with plan, quota, and cost.",
+    modelProviders: "Default models, behavior, provider access, usage, and cost.",
     memoryImport: "Bring Codex and Claude Code memory into an agent workspace.",
     notifications: "Browser push notifications from your gateway.",
     security: "Gateway auth, exec policy, tool profile, and approvals.",
@@ -2044,6 +2033,14 @@ export const en: TranslationMap = {
     sessionRestarted:
       "{error} OpenClaw started a fresh session; earlier messages remain for context.",
     unsupportedGateway: "Update the Gateway to continue setup with OpenClaw.",
+    panel: {
+      title: "OpenClaw",
+      toggle: "Ask OpenClaw",
+      close: "Close Ask OpenClaw",
+      resize: "Resize Ask OpenClaw",
+      dockBottom: "Dock Ask OpenClaw at bottom",
+      dockRight: "Dock Ask OpenClaw at right",
+    },
     history: {
       button: "History",
       title: "Recent changes",
@@ -2408,7 +2405,8 @@ export const en: TranslationMap = {
     saveFailed: "The feature setting could not be saved.",
     codeMode: {
       title: "Code Mode",
-      description: "Let agents combine tools in compact, sandboxed JavaScript workflows.",
+      description:
+        "Let agents combine tools in compact, sandboxed JavaScript workflows. Auto engages code mode only for models evaluated as strong code-mode performers.",
     },
     swarm: {
       title: "Swarm",
@@ -3204,7 +3202,6 @@ export const en: TranslationMap = {
       title: "Snapshot",
       subtitle: "Latest gateway handshake information.",
       status: "Status",
-      uptime: "Uptime",
       tickInterval: "Tick Interval",
       lastChannelsRefresh: "Last Channels Refresh",
       lastError: "Last error",
@@ -3964,8 +3961,8 @@ export const en: TranslationMap = {
     startupStatus: {
       preparingWorkspace: "Preparing workspace…",
       provisioningEnvironment: "Provisioning environment…",
-      preparingContext: "Preparing context…",
-      startingModel: "Starting model…",
+      preparingContext: "Preparing this turn…",
+      startingModel: "Waiting for a response…",
     },
     outputTokens: "{count} output tokens",
     archivedSessionDisabled: "This session is archived. Unarchive it to continue the conversation.",
@@ -4719,6 +4716,7 @@ export const en: TranslationMap = {
     ru: "Русский (Russian)",
   },
   cron: {
+    adminRequired: "Browsing only. Automation changes require operator.admin access.",
     tabs: {
       filterLabel: "Automation status",
       all: "All",

@@ -142,9 +142,11 @@ export function writeDone(res: ServerResponse) {
   res.write("data: [DONE]\n\n");
 }
 
+export const SSE_CONTENT_TYPE = "text/event-stream; charset=utf-8";
+
 export function setSseHeaders(res: ServerResponse) {
   res.statusCode = 200;
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Content-Type", SSE_CONTENT_TYPE);
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders?.();
@@ -180,6 +182,18 @@ export function watchClientDisconnect(
       abortController.abort(new ClientDisconnectError());
     }
   };
+  const stopWatchingResponseErrors = () => {
+    res.off("error", handleClose);
+    res.off("close", stopWatchingResponseErrors);
+  };
+  // Finalizers release socket watchers before res.end(); keep its error
+  // listener until close so a failed flush cannot become process-fatal.
+  res.on("error", handleClose);
+  res.once("close", stopWatchingResponseErrors);
+  if (res.destroyed || sockets.some((socket) => socket.destroyed)) {
+    handleClose();
+    return () => {};
+  }
   for (const socket of sockets) {
     socket.on("close", handleClose);
   }

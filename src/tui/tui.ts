@@ -42,7 +42,6 @@ import { CustomEditor } from "./components/custom-editor.js";
 import { resolveLocalRunShutdownGraceMs } from "./local-run-shutdown.js";
 import { editorTheme, theme } from "./theme/theme.js";
 import type { TuiBackend } from "./tui-backend.js";
-import { addBlockedChatSubmitNotice } from "./tui-busy-notice.js";
 import { createCommandHandlers } from "./tui-command-handlers.js";
 import { createEventHandlers } from "./tui-event-handlers.js";
 import {
@@ -62,12 +61,7 @@ import { createOverlayHandlers } from "./tui-overlays.js";
 import { createTuiPluginApprovalController } from "./tui-plugin-approvals.js";
 import { createSessionActions } from "./tui-session-actions.js";
 import { TUI_SESSION_LOOKUP_LIMIT } from "./tui-session-list-policy.js";
-import {
-  disconnectedTuiChatSubmitMessage,
-  resolveTuiChatSubmitAdmission,
-  type TuiChatSubmitAdmission,
-  type TuiPendingSubmit,
-} from "./tui-submit-state.js";
+import type { TuiPendingSubmit } from "./tui-submit-state.js";
 import {
   createEditorSubmitHandler,
   createSubmitBurstCoalescer,
@@ -107,6 +101,9 @@ const SESSION_SUBSCRIPTION_RETRY_DELAY_MS = 25;
 
 type RunTuiOptions = TuiOptions & {
   backend?: TuiBackend;
+  submitBurstWindowMs?: number;
+  ctrlCExitWindowMs?: number;
+  onSubmitBurstCaptured?: (value: string) => void;
   /** Exact pre-probed remote target for an in-process setup handoff. */
   boundGateway?: {
     url: string;
@@ -1516,6 +1513,8 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
   };
 
   const deferredFinish = createDeferredTuiFinish();
+  // The backend can own requestExit before the editor/coalescer exists.
+  let disposeSubmitBurst = () => {};
   const forceExit = () => {
     try {
       process.stderr.write("openclaw tui forcing exit\n");
@@ -1530,6 +1529,8 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
       return;
     }
     exitRequested = true;
+    // Exit owns the input boundary before transport teardown can race a buffered submit.
+    disposeSubmitBurst();
     connectionGeneration += 1;
     exitResult = {
       exitReason: result?.exitReason ?? "exit",
@@ -1562,35 +1563,43 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
   };
   exitAwareClient.setRequestExitHandler?.(() => requestExit());
 
-  const { handleCommand, sendMessage, openModelSelector, openAgentSelector, openSessionSelector } =
-    createCommandHandlers({
-      client,
-      chatLog,
-      tui,
-      opts: { ...opts, local: isLocalMode },
-      state,
-      deliverDefault,
-      openOverlay,
-      closeOverlay,
-      refreshSessionInfo,
-      applySessionInfoFromPatch,
-      applySessionMutationResult,
-      loadHistory,
-      setSession,
-      refreshAgents,
-      abortActive,
-      setActivityStatus,
-      formatSessionKey,
-      noteLocalRunId,
-      noteLocalBtwRunId,
-      forgetLocalRunId,
-      forgetLocalBtwRunId,
-      consumeCompletedRunForPendingSend,
-      isRunObserved,
-      flushPendingHistoryRefreshIfIdle,
-      runAuthFlow,
-      requestExit,
-    });
+  const {
+    handleCommand,
+    sendMessage,
+    captureMessageAdmission,
+    resolveMessageAdmission,
+    reportBlockedMessageSubmit,
+    openModelSelector,
+    openAgentSelector,
+    openSessionSelector,
+  } = createCommandHandlers({
+    client,
+    chatLog,
+    tui,
+    opts: { ...opts, local: isLocalMode },
+    state,
+    deliverDefault,
+    openOverlay,
+    closeOverlay,
+    refreshSessionInfo,
+    applySessionInfoFromPatch,
+    applySessionMutationResult,
+    loadHistory,
+    setSession,
+    refreshAgents,
+    abortActive,
+    setActivityStatus,
+    formatSessionKey,
+    noteLocalRunId,
+    noteLocalBtwRunId,
+    forgetLocalRunId,
+    forgetLocalBtwRunId,
+    consumeCompletedRunForPendingSend,
+    isRunObserved,
+    flushPendingHistoryRefreshIfIdle,
+    runAuthFlow,
+    requestExit,
+  });
 
   const { runLocalShellLine } = createLocalShellRunner({
     chatLog,
@@ -1599,25 +1608,6 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
     closeOverlay,
   });
   updateAutocompleteProvider();
-  const admitChatMessage = (message: string) =>
-    resolveTuiChatSubmitAdmission({
-      isConnected: state.isConnected,
-      activeChatRunId: state.activeChatRunId,
-      pendingSubmit: state.pendingSubmit,
-      message,
-    });
-  const notifyBlockedChatSubmit = (
-    _message: string,
-    reason: Exclude<TuiChatSubmitAdmission, "allowed">,
-  ) => {
-    if (reason === "pending") {
-      addBlockedChatSubmitNotice(chatLog);
-    } else {
-      chatLog.addSystem(disconnectedTuiChatSubmitMessage(isLocalMode));
-      setActivityStatus("disconnected");
-    }
-    tui.requestRender();
-  };
   const notifySubmitError = (action: TuiSubmitAction, error: unknown) => {
     const message = formatTuiErrorMessage(error);
     chatLog.addSystem(`${action} submit failed: ${message}`);
@@ -1629,13 +1619,18 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
     sendMessage,
     handleBangLine: runLocalShellLine,
     onSubmitError: notifySubmitError,
-    admitMessage: admitChatMessage,
-    onBlockedMessageSubmit: notifyBlockedChatSubmit,
+    admitMessage: resolveMessageAdmission,
+    onBlockedMessageSubmit: reportBlockedMessageSubmit,
   });
-  editor.onSubmit = createSubmitBurstCoalescer({
+  const submitBurst = createSubmitBurstCoalescer({
     submit: submitHandler,
-    enabled: shouldEnableWindowsGitBashPasteFallback(),
+    captureSnapshot: captureMessageAdmission,
+    enabled: opts.submitBurstWindowMs !== undefined || shouldEnableWindowsGitBashPasteFallback(),
+    burstWindowMs: opts.submitBurstWindowMs,
+    onCapture: opts.onSubmitBurstCaptured,
   });
+  disposeSubmitBurst = submitBurst.dispose;
+  editor.onSubmit = submitBurst;
 
   editor.onEscape = () => {
     if (chatLog.hasVisibleBtw()) {
@@ -1653,6 +1648,7 @@ export async function runTui(opts: RunTuiOptions): Promise<TuiResult> {
       lastCtrlCAt,
       exitRequested,
       wasDisconnected,
+      exitWindowMs: opts.ctrlCExitWindowMs,
     });
     if (decision.action === "force-exit") {
       forceExit();

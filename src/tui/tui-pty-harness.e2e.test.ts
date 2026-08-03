@@ -346,6 +346,22 @@ describe.sequential("TUI PTY harness", () => {
   );
 
   it(
+    "preserves consecutive backspaces received in the same terminal input chunk",
+    async () => {
+      await fixture.run.write("abc\x7f\x7f\r", { delay: false });
+
+      const sent = await fixture.waitForLogEntry(
+        (entry) =>
+          entry.method === "sendChat" &&
+          (objectFieldEquals(entry, "message", "a") || objectFieldEquals(entry, "message", "ab")),
+      );
+      expect(sent.payload).toMatchObject({ message: "a" });
+      await fixture.run.waitForOutput("PTY_RESPONSE: a");
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "deletes forward with Ctrl+D without exiting a nonempty terminal editor",
     async () => {
       await fixture.run.write("keepXword", { delay: false });
@@ -856,6 +872,11 @@ describe.sequential("TUI PTY harness", () => {
       await fixture.run.waitForOutput("/help");
       await fixture.run.waitForOutput("/verbose <on|off|full>");
       await fixture.run.waitForOutput("/reasoning <on|off|stream>");
+      await fixture.run.waitForOutput("/goal");
+      await fixture.run.waitForOutput("/goal start <objective>");
+      await fixture.run.waitForOutput("/btw <side question>");
+      await fixture.run.waitForOutput("/queue");
+      await fixture.run.waitForOutput("/stop");
       await fixture.run.waitForOutput("/exit");
     },
     TEST_TIMEOUT_MS,

@@ -196,6 +196,7 @@ export type ChatProps = {
   readSignal?: AbortSignal;
   onPendingReadsChange?: (delta: 1 | -1) => void;
   onAttachmentsChange?: (attachments: ChatAttachment[]) => void;
+  onRemoveAttachment?: (attachment: ChatAttachment) => void;
   onAssistantAttachmentLoaded?: () => void;
   onRequestOpenImage?: () => number;
   onOpenImage?: (item: ImageLightboxItem, requestVersion?: number) => void;
@@ -412,7 +413,6 @@ export function renderChat(props: ChatProps) {
             showThinking: props.showThinking,
             showToolCalls: props.showToolCalls,
             persistCommentary: props.persistCommentary,
-            readOnly: true,
             sessions: props.sessions,
             sessionHost: props.sessionHost,
             gatewayUrl: props.gatewayUrl,
@@ -516,6 +516,7 @@ export function renderChat(props: ChatProps) {
     onNewSession: props.onNewSession,
     onClearReply: props.onClearReply,
     onAttachmentsChange: props.onAttachmentsChange,
+    onRemoveAttachment: props.onRemoveAttachment,
   });
   const scrollToBottomButton =
     props.showNewMessages && props.onScrollToBottom
@@ -627,7 +628,7 @@ export function renderChat(props: ChatProps) {
                 : ""}"
             >
               <div class="chat-main__conversation">
-                ${thread}
+                ${thread} ${scrollToBottomButton}
                 ${props.inlineApproval && props.onApprovalDecision
                   ? html`<div class="chat-inline-approval">
                       ${renderExecApprovalCard({
@@ -665,7 +666,6 @@ export function renderChat(props: ChatProps) {
                   onResolve: (suggestion, resolution) =>
                     props.onResolveSessionSuggestion?.(suggestion, resolution),
                 })}
-                ${scrollToBottomButton}
                 ${renderChatSwarmProgress({
                   sessions: props.swarmSessions ?? [],
                   sessionKey: props.sessionKey,

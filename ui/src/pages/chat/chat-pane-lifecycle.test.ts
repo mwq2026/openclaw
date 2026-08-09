@@ -10,6 +10,7 @@ import type {
 } from "../../../../packages/gateway-protocol/src/index.js";
 import { GatewayRequestError, type GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
+import { createBrowserAnnotationHandoff } from "../../app/browser-annotation-handoff.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { createInitialUserMessageHandoff } from "../../app/initial-user-message-handoff.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
@@ -120,6 +121,7 @@ describe("chat pane first-turn attachment lifecycle", () => {
       agentSelection: { state: { selectedId: "main" } },
       agents: { state: { agentsList: null } },
       initialUserMessage: createInitialUserMessageHandoff(),
+      browserAnnotationHandoff: createBrowserAnnotationHandoff(),
       sessions: {},
     } as unknown as ApplicationContext;
     prepareInitialUserMessageHandoff(
@@ -696,13 +698,13 @@ describe("chat pane session suggestion lifecycle", () => {
 
 function createConfirmationOwner() {
   const owner = document.createElement("span");
-  owner.className = "chat-delete-wrap";
+  owner.className = "chat-confirm-wrap";
   const trigger = document.createElement("button");
   owner.appendChild(trigger);
   document.body.appendChild(owner);
   confirmationOwners.add(owner);
   openChatRewindConfirmation(trigger, vi.fn());
-  const popover = [...document.querySelectorAll<HTMLElement>(".chat-delete-confirm")].at(-1);
+  const popover = [...document.querySelectorAll<HTMLElement>(".chat-confirm-popover")].at(-1);
   expect(popover).toBeInstanceOf(HTMLElement);
   return { owner, popover: popover! };
 }
